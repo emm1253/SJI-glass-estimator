@@ -1,0 +1,41 @@
+services:
+  app:
+    build: .
+    container_name: sji-estimator-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:4173:4173"
+    networks:
+      - sji-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sji-estimator-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sji-net
+
+networks:
+  sji-net:
+    driver: bridge
+
+volumes:
+  postgres-data:

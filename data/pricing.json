@@ -1,0 +1,79 @@
+{
+  "markupMultiplier": 2.25,
+  "defaultTaxRate": 0,
+  "glassSpecs": [
+    {
+      "id": "clear",
+      "name": "Clear",
+      "pricePerSqFt": 0
+    },
+    {
+      "id": "lowe",
+      "name": "LowE",
+      "pricePerSqFt": 2
+    },
+    {
+      "id": "tempered",
+      "name": "Tempered",
+      "pricePerSqFt": 5
+    },
+    {
+      "id": "annealed",
+      "name": "Annealed",
+      "pricePerSqFt": 1.25
+    },
+    {
+      "id": "colored-spacer",
+      "name": "Colored Spacer",
+      "pricePerSqFt": 0.75
+    },
+    {
+      "id": "argon",
+      "name": "Argon",
+      "pricePerSqFt": 1.5
+    },
+    {
+      "id": "pattern",
+      "name": "Pattern",
+      "pricePerSqFt": 3
+    },
+    {
+      "id": "eighth-over-eighth",
+      "name": "1/8 over 1/8",
+      "pricePerSqFt": 2.5
+    },
+    {
+      "id": "sixteenth-over-sixteenth",
+      "name": "1/16 over 1/16",
+      "pricePerSqFt": 1.75
+    }
+  ],
+  "addOns": [
+    {
+      "id": "logistics",
+      "name": "Logistics",
+      "cost": 85,
+      "costType": "flat"
+    },
+    {
+      "id": "disposal",
+      "name": "Disposal",
+      "cost": 12,
+      "costType": "per_item"
+    }
+  ],
+  "labor": {
+    "hourly": {
+      "enabled": true,
+      "rate": 95
+    },
+    "perSquareFoot": {
+      "enabled": true,
+      "rate": 4.5
+    },
+    "flatFee": {
+      "enabled": true,
+      "fee": 175
+    }
+  }
+}

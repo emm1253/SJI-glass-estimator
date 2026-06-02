@@ -1,0 +1,1852 @@
+declare const React: any;
+declare const ReactDOM: any;
+
+const { useEffect, useMemo, useState } = React;
+
+type Role = "admin" | "team_member";
+type ActiveView = "estimate" | "saved" | "admin" | "team";
+type CostType = "flat" | "per_sq_ft" | "per_item";
+
+type AuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  active: boolean;
+};
+
+type TeamUser = AuthUser & {
+  createdAt?: string;
+  updatedAt?: string;
+  passwordReset?: string;
+};
+
+type GlassSpec = {
+  id: string;
+  name: string;
+  pricePerSqFt: number;
+};
+
+type AddOn = {
+  id: string;
+  name: string;
+  cost: number;
+  costType: CostType;
+};
+
+type LaborSettings = {
+  hourly: {
+    enabled: boolean;
+    rate: number;
+  };
+  perSquareFoot: {
+    enabled: boolean;
+    rate: number;
+  };
+  flatFee: {
+    enabled: boolean;
+    fee: number;
+  };
+};
+
+type PricingSettings = {
+  markupMultiplier: number;
+  defaultTaxRate: number;
+  glassSpecs: GlassSpec[];
+  addOns: AddOn[];
+  labor: LaborSettings;
+};
+
+type EstimateLine = {
+  id: string;
+  width: number;
+  height: number;
+  quantity: number;
+  specIds: string[];
+};
+
+type DraftLine = {
+  width: string;
+  height: string;
+  quantity: string;
+  specIds: string[];
+};
+
+type AddOnTotal = {
+  addOn: AddOn;
+  total: number;
+  basis: string;
+};
+
+type LaborSelection = {
+  useHours: boolean;
+  hours: string;
+  useSquareFoot: boolean;
+  useFlatFee: boolean;
+};
+
+type SavedEstimate = {
+  id: string;
+  name: string;
+  customerName: string;
+  createdByName: string;
+  createdAt: string;
+  totals: {
+    totalSqFt: number;
+    totalQuantity: number;
+    glassSubtotal: number;
+    glassTotalWithMarkup: number;
+    addOnsTotal: number;
+    laborTotal: number;
+    preTaxTotal: number;
+    taxAmount: number;
+    grandTotal: number;
+  };
+};
+
+type AdminStatus = "idle" | "saving" | "saved" | "error";
+
+const fallbackSettings: PricingSettings = {
+  markupMultiplier: 2.25,
+  defaultTaxRate: 0,
+  glassSpecs: [
+    { id: "clear", name: "Clear", pricePerSqFt: 0 },
+    { id: "lowe", name: "LowE", pricePerSqFt: 2 },
+    { id: "tempered", name: "Tempered", pricePerSqFt: 5 },
+    { id: "annealed", name: "Annealed", pricePerSqFt: 1.25 },
+    { id: "colored-spacer", name: "Colored Spacer", pricePerSqFt: 0.75 },
+    { id: "argon", name: "Argon", pricePerSqFt: 1.5 },
+    { id: "pattern", name: "Pattern", pricePerSqFt: 3 },
+    { id: "eighth-over-eighth", name: "1/8 over 1/8", pricePerSqFt: 2.5 },
+    { id: "sixteenth-over-sixteenth", name: "1/16 over 1/16", pricePerSqFt: 1.75 }
+  ],
+  addOns: [
+    { id: "logistics", name: "Logistics", cost: 85, costType: "flat" },
+    { id: "disposal", name: "Disposal", cost: 12, costType: "per_item" }
+  ],
+  labor: {
+    hourly: { enabled: true, rate: 95 },
+    perSquareFoot: { enabled: true, rate: 4.5 },
+    flatFee: { enabled: true, fee: 175 }
+  }
+};
+
+const currency = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD"
+});
+
+const numberFormat = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 0
+});
+
+const costTypeLabels: Record<CostType, string> = {
+  flat: "Flat fee",
+  per_sq_ft: "Per square foot",
+  per_item: "Per item/quantity"
+};
+
+function money(value: number): string {
+  return currency.format(Number.isFinite(value) ? value : 0);
+}
+
+function measurement(value: number): string {
+  return numberFormat.format(Number.isFinite(value) ? value : 0);
+}
+
+function positive(value: string | number): boolean {
+  return Number(value) > 0;
+}
+
+function parseFractionalInches(value: string | number): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : Number.NaN;
+  }
+
+  const raw = value.trim();
+  if (!raw || raw.startsWith("-")) return Number.NaN;
+
+  const normalized = raw
+    .replace(/"/g, "")
+    .replace(/\s*\/\s*/g, "/")
+    .replace(/(\d)-(?=\d)/g, "$1 ")
+    .replace(/\s+/g, " ");
+
+  const directNumber = Number(normalized);
+  if (Number.isFinite(directNumber)) return directNumber;
+
+  return normalized.split(" ").reduce((total, part) => {
+    if (!part) return total;
+
+    if (part.includes("/")) {
+      const pieces = part.split("/");
+      if (pieces.length !== 2) return Number.NaN;
+
+      const numerator = Number(pieces[0]);
+      const denominator = Number(pieces[1]);
+      if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+        return Number.NaN;
+      }
+
+      return total + numerator / denominator;
+    }
+
+    const numberPart = Number(part);
+    return Number.isFinite(numberPart) ? total + numberPart : Number.NaN;
+  }, 0);
+}
+
+function makeId(prefix: string): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+}
+
+function cloneSettings(settings: PricingSettings): PricingSettings {
+  return JSON.parse(JSON.stringify(settings));
+}
+
+function slugify(value: string, fallback: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || fallback;
+}
+
+function normalizeNumber(value: string | number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+}
+
+function formatDate(value: string): string {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function specNames(line: EstimateLine, settings: PricingSettings): string {
+  const names = settings.glassSpecs
+    .filter((spec) => line.specIds.includes(spec.id))
+    .map((spec) => spec.name);
+  return names.length ? names.join(", ") : "No specs selected";
+}
+
+function squareFeet(width: number, height: number): number {
+  return (width * height) / 144;
+}
+
+function specPricePerSqFt(line: EstimateLine, settings: PricingSettings): number {
+  return settings.glassSpecs.reduce((total, spec) => {
+    return line.specIds.includes(spec.id) ? total + spec.pricePerSqFt : total;
+  }, 0);
+}
+
+function calculateLine(line: EstimateLine, settings: PricingSettings) {
+  const unitSqFt = squareFeet(line.width, line.height);
+  const totalSqFt = unitSqFt * line.quantity;
+  const pricePerSqFt = specPricePerSqFt(line, settings);
+  const subtotal = totalSqFt * pricePerSqFt;
+
+  return {
+    unitSqFt,
+    totalSqFt,
+    pricePerSqFt,
+    subtotal
+  };
+}
+
+function calculateAddOn(addOn: AddOn, totalSqFt: number, totalQuantity: number): AddOnTotal {
+  if (addOn.costType === "per_sq_ft") {
+    return {
+      addOn,
+      total: addOn.cost * totalSqFt,
+      basis: `${money(addOn.cost)} x ${measurement(totalSqFt)} sq ft`
+    };
+  }
+
+  if (addOn.costType === "per_item") {
+    return {
+      addOn,
+      total: addOn.cost * totalQuantity,
+      basis: `${money(addOn.cost)} x ${measurement(totalQuantity)} items`
+    };
+  }
+
+  return {
+    addOn,
+    total: addOn.cost,
+    basis: "Flat fee"
+  };
+}
+
+async function responseJson(response: Response) {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || "Request failed.");
+  }
+  return data;
+}
+
+function App() {
+  const [activeView, setActiveView] = useState<ActiveView>("estimate");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [settings, setSettings] = useState<PricingSettings>(fallbackSettings);
+  const [adminSettings, setAdminSettings] = useState<PricingSettings>(cloneSettings(fallbackSettings));
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [adminStatus, setAdminStatus] = useState<AdminStatus>("idle");
+  const [adminMessage, setAdminMessage] = useState("");
+  const [draftLine, setDraftLine] = useState<DraftLine>({
+    width: "",
+    height: "",
+    quantity: "1",
+    specIds: ["clear"]
+  });
+  const [lineError, setLineError] = useState("");
+  const [estimateLines, setEstimateLines] = useState<EstimateLine[]>([]);
+  const [selectedAddOns, setSelectedAddOns] = useState<string[]>([]);
+  const [laborSelection, setLaborSelection] = useState<LaborSelection>({
+    useHours: false,
+    hours: "",
+    useSquareFoot: false,
+    useFlatFee: false
+  });
+  const [taxEnabled, setTaxEnabled] = useState(false);
+  const [taxRate, setTaxRate] = useState("0");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [users, setUsers] = useState<TeamUser[]>([]);
+  const [teamStatus, setTeamStatus] = useState("");
+  const [teamError, setTeamError] = useState("");
+  const [teamDraft, setTeamDraft] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: "team_member" as Role
+  });
+  const [estimates, setEstimates] = useState<SavedEstimate[]>([]);
+  const [estimateName, setEstimateName] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [saveMessage, setSaveMessage] = useState("");
+  const [saveError, setSaveError] = useState("");
+
+  const isAdmin = authUser?.role === "admin";
+
+  async function apiRequest(path: string, options: any = {}) {
+    const response = await fetch(path, {
+      ...options,
+      credentials: "same-origin",
+      headers: {
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {})
+      }
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401 && path !== "/api/session") {
+      setAuthUser(null);
+      setActiveView("estimate");
+    }
+
+    if (!response.ok) {
+      throw new Error(data.error || "Request failed.");
+    }
+
+    return data;
+  }
+
+  async function refreshSettings() {
+    const data = await apiRequest("/api/settings");
+    setSettings(data);
+    setAdminSettings(cloneSettings(data));
+    setTaxRate(String(data.defaultTaxRate ?? 0));
+  }
+
+  async function refreshEstimates() {
+    const data = await apiRequest("/api/estimates");
+    setEstimates(data.estimates || []);
+  }
+
+  async function refreshUsers() {
+    const data = await apiRequest("/api/users");
+    setUsers(data.users || []);
+  }
+
+  async function loadAuthorizedData(user: AuthUser) {
+    setLoading(true);
+    setLoadError("");
+    try {
+      await Promise.all([
+        refreshSettings(),
+        refreshEstimates(),
+        user.role === "admin" ? refreshUsers() : Promise.resolve()
+      ]);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not load secure app data.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function checkSession() {
+    try {
+      const response = await fetch("/api/session", { credentials: "same-origin" });
+      if (!response.ok) {
+        setAuthUser(null);
+        setLoading(false);
+        return;
+      }
+      const data = await responseJson(response);
+      setAuthUser(data.user);
+      await loadAuthorizedData(data.user);
+    } catch {
+      setAuthUser(null);
+      setLoading(false);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    checkSession();
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin && (activeView === "admin" || activeView === "team")) {
+      setActiveView("estimate");
+    }
+  }, [activeView, isAdmin]);
+
+  async function login(event: any) {
+    event.preventDefault();
+    setLoginLoading(true);
+    setLoginError("");
+
+    try {
+      const data = await apiRequest("/api/login", {
+        method: "POST",
+        body: JSON.stringify({ email: loginEmail, password: loginPassword })
+      });
+      setAuthUser(data.user);
+      setLoginPassword("");
+      await loadAuthorizedData(data.user);
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "Unable to sign in.");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  async function logout() {
+    await apiRequest("/api/logout", { method: "POST" }).catch(() => null);
+    setAuthUser(null);
+    setUsers([]);
+    setEstimates([]);
+    setEstimateLines([]);
+    setSelectedAddOns([]);
+    setActiveView("estimate");
+  }
+
+  const totals = useMemo(() => {
+    const lineCalculations = estimateLines.map((line) => ({
+      line,
+      ...calculateLine(line, settings)
+    }));
+    const totalSqFt = lineCalculations.reduce((total, line) => total + line.totalSqFt, 0);
+    const totalQuantity = estimateLines.reduce((total, line) => total + line.quantity, 0);
+    const glassSubtotal = lineCalculations.reduce((total, line) => total + line.subtotal, 0);
+    const glassTotalWithMarkup = glassSubtotal * settings.markupMultiplier;
+    const addOnTotals = settings.addOns
+      .filter((addOn) => selectedAddOns.includes(addOn.id))
+      .map((addOn) => calculateAddOn(addOn, totalSqFt, totalQuantity));
+    const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
+    const hours = normalizeNumber(laborSelection.hours);
+    const laborRows = [
+      laborSelection.useHours && settings.labor.hourly.enabled
+        ? {
+            label: "Labor by hours",
+            basis: `${measurement(hours)} hrs x ${money(settings.labor.hourly.rate)}/hr`,
+            total: hours * settings.labor.hourly.rate
+          }
+        : null,
+      laborSelection.useSquareFoot && settings.labor.perSquareFoot.enabled
+        ? {
+            label: "Labor by square footage",
+            basis: `${measurement(totalSqFt)} sq ft x ${money(settings.labor.perSquareFoot.rate)}/sq ft`,
+            total: totalSqFt * settings.labor.perSquareFoot.rate
+          }
+        : null,
+      laborSelection.useFlatFee && settings.labor.flatFee.enabled
+        ? {
+            label: "Labor flat fee",
+            basis: "Flat labor fee",
+            total: settings.labor.flatFee.fee
+          }
+        : null
+    ].filter(Boolean);
+    const laborTotal = laborRows.reduce((total: number, row: any) => total + row.total, 0);
+    const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal;
+    const taxAmount = taxEnabled ? preTaxTotal * (normalizeNumber(taxRate) / 100) : 0;
+    const grandTotal = preTaxTotal + taxAmount;
+
+    return {
+      lineCalculations,
+      totalSqFt,
+      totalQuantity,
+      glassSubtotal,
+      glassTotalWithMarkup,
+      addOnTotals,
+      addOnsTotal,
+      laborRows,
+      laborTotal,
+      preTaxTotal,
+      taxAmount,
+      grandTotal
+    };
+  }, [estimateLines, laborSelection, selectedAddOns, settings, taxEnabled, taxRate]);
+
+  function updateDraft(field: keyof DraftLine, value: string | string[]) {
+    setDraftLine((current) => ({
+      ...current,
+      [field]: value
+    }));
+    setLineError("");
+  }
+
+  function toggleDraftSpec(specId: string) {
+    setDraftLine((current) => {
+      const specIds = current.specIds.includes(specId)
+        ? current.specIds.filter((id) => id !== specId)
+        : [...current.specIds, specId];
+      return { ...current, specIds };
+    });
+  }
+
+  function addLine() {
+    const width = parseFractionalInches(draftLine.width);
+    const height = parseFractionalInches(draftLine.height);
+    const quantity = Number(draftLine.quantity);
+
+    if (!(width > 0) || !(height > 0) || !(quantity > 0)) {
+      setLineError("Width, height, and quantity must be positive values.");
+      return;
+    }
+
+    setEstimateLines((current) => [
+      ...current,
+      {
+        id: makeId("line"),
+        width,
+        height,
+        quantity,
+        specIds: draftLine.specIds
+      }
+    ]);
+
+    setDraftLine({
+      width: "",
+      height: "",
+      quantity: "1",
+      specIds: ["clear"]
+    });
+    setLineError("");
+  }
+
+  function removeLine(id: string) {
+    setEstimateLines((current) => current.filter((line) => line.id !== id));
+  }
+
+  function toggleAddOn(addOnId: string) {
+    setSelectedAddOns((current) =>
+      current.includes(addOnId) ? current.filter((id) => id !== addOnId) : [...current, addOnId]
+    );
+  }
+
+  async function saveEstimate() {
+    setSaveError("");
+    setSaveMessage("");
+
+    if (!estimateLines.length) {
+      setSaveError("Add at least one glass line item before saving an estimate.");
+      return;
+    }
+
+    try {
+      const data = await apiRequest("/api/estimates", {
+        method: "POST",
+        body: JSON.stringify({
+          name: estimateName || "Glass estimate",
+          customerName,
+          lines: estimateLines,
+          selectedAddOns,
+          laborSelection,
+          taxEnabled,
+          taxRate
+        })
+      });
+      setEstimates(data.estimates || []);
+      setEstimateName("");
+      setCustomerName("");
+      setSaveMessage("Estimate saved securely.");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Estimate could not be saved.");
+    }
+  }
+
+  async function deleteEstimate(id: string) {
+    try {
+      const data = await apiRequest(`/api/estimates/${id}`, { method: "DELETE" });
+      setEstimates(data.estimates || []);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Estimate could not be deleted.");
+    }
+  }
+
+  function updateAdminGlassSpec(id: string, field: keyof GlassSpec, value: string) {
+    setAdminStatus("idle");
+    setAdminSettings((current) => ({
+      ...current,
+      glassSpecs: current.glassSpecs.map((spec) =>
+        spec.id === id
+          ? {
+              ...spec,
+              [field]: field === "pricePerSqFt" ? normalizeNumber(value) : value
+            }
+          : spec
+      )
+    }));
+  }
+
+  function updateAdminAddOn(id: string, field: keyof AddOn, value: string) {
+    setAdminStatus("idle");
+    setAdminSettings((current) => ({
+      ...current,
+      addOns: current.addOns.map((addOn) =>
+        addOn.id === id
+          ? {
+              ...addOn,
+              [field]: field === "cost" ? normalizeNumber(value) : value
+            }
+          : addOn
+      )
+    }));
+  }
+
+  function addAdminAddOn() {
+    setAdminStatus("idle");
+    setAdminSettings((current) => {
+      const index = current.addOns.length + 1;
+      const id = makeId("add-on");
+      return {
+        ...current,
+        addOns: [
+          ...current.addOns,
+          {
+            id,
+            name: `Add-on ${index}`,
+            cost: 0,
+            costType: "flat"
+          }
+        ]
+      };
+    });
+  }
+
+  function removeAdminAddOn(id: string) {
+    setAdminStatus("idle");
+    setAdminSettings((current) => ({
+      ...current,
+      addOns: current.addOns.filter((addOn) => addOn.id !== id)
+    }));
+  }
+
+  function updateLabor(method: keyof LaborSettings, field: string, value: string | boolean) {
+    setAdminStatus("idle");
+    setAdminSettings((current) => ({
+      ...current,
+      labor: {
+        ...current.labor,
+        [method]: {
+          ...current.labor[method],
+          [field]: typeof value === "boolean" ? value : normalizeNumber(value)
+        }
+      }
+    }));
+  }
+
+  function validateAdmin(settingsToValidate: PricingSettings): string {
+    if (!positive(settingsToValidate.markupMultiplier)) {
+      return "Markup multiplier must be greater than zero.";
+    }
+
+    if (!settingsToValidate.glassSpecs.length) {
+      return "At least one glass specification is required.";
+    }
+
+    const missingSpecName = settingsToValidate.glassSpecs.some((spec) => !spec.name.trim());
+    if (missingSpecName) {
+      return "Every glass specification needs a name.";
+    }
+
+    const missingAddOnName = settingsToValidate.addOns.some((addOn) => !addOn.name.trim());
+    if (missingAddOnName) {
+      return "Every add-on needs a name.";
+    }
+
+    return "";
+  }
+
+  async function saveAdminSettings() {
+    if (!isAdmin) return;
+
+    const prepared: PricingSettings = {
+      ...adminSettings,
+      markupMultiplier: normalizeNumber(adminSettings.markupMultiplier),
+      defaultTaxRate: normalizeNumber(adminSettings.defaultTaxRate),
+      glassSpecs: adminSettings.glassSpecs.map((spec, index) => ({
+        ...spec,
+        id: slugify(spec.id || spec.name, `glass-spec-${index + 1}`),
+        name: spec.name.trim(),
+        pricePerSqFt: normalizeNumber(spec.pricePerSqFt)
+      })),
+      addOns: adminSettings.addOns.map((addOn, index) => ({
+        ...addOn,
+        id: slugify(addOn.id || addOn.name, `add-on-${index + 1}`),
+        name: addOn.name.trim(),
+        cost: normalizeNumber(addOn.cost)
+      }))
+    };
+
+    const validationError = validateAdmin(prepared);
+    if (validationError) {
+      setAdminStatus("error");
+      setAdminMessage(validationError);
+      return;
+    }
+
+    try {
+      setAdminStatus("saving");
+      setAdminMessage("");
+      const saved = await apiRequest("/api/settings", {
+        method: "PUT",
+        body: JSON.stringify(prepared)
+      });
+      setSettings(saved);
+      setAdminSettings(cloneSettings(saved));
+      setTaxRate(String(saved.defaultTaxRate ?? 0));
+      setAdminStatus("saved");
+      setAdminMessage("Pricing settings saved. The estimator is now using the latest values.");
+    } catch (error) {
+      setAdminStatus("error");
+      setAdminMessage(error instanceof Error ? error.message : "Settings could not be saved.");
+    }
+  }
+
+  async function createTeamMember() {
+    setTeamStatus("");
+    setTeamError("");
+
+    try {
+      const data = await apiRequest("/api/users", {
+        method: "POST",
+        body: JSON.stringify(teamDraft)
+      });
+      setUsers(data.users || []);
+      setTeamDraft({ name: "", email: "", password: "", role: "team_member" });
+      setTeamStatus("Team member access created.");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "Team member could not be created.");
+    }
+  }
+
+  function patchTeamUser(id: string, patch: Partial<TeamUser>) {
+    setUsers((current) => current.map((user) => user.id === id ? { ...user, ...patch } : user));
+  }
+
+  async function updateTeamMember(user: TeamUser) {
+    setTeamStatus("");
+    setTeamError("");
+
+    try {
+      const payload: any = {
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        active: user.active
+      };
+      if (user.passwordReset) payload.password = user.passwordReset;
+      const data = await apiRequest(`/api/users/${user.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      setUsers(data.users || []);
+      setTeamStatus("Team member access updated.");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "Team member could not be updated.");
+    }
+  }
+
+  async function deleteTeamMember(id: string) {
+    setTeamStatus("");
+    setTeamError("");
+
+    try {
+      const data = await apiRequest(`/api/users/${id}`, { method: "DELETE" });
+      setUsers(data.users || []);
+      setTeamStatus("Team member access removed.");
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : "Team member could not be removed.");
+    }
+  }
+
+  if (authLoading || (authUser && loading)) {
+    return (
+      <main className="app-shell">
+        <section className="loading-card">Loading secure SJI workspace...</section>
+      </main>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <LoginView
+        email={loginEmail}
+        error={loginError}
+        loading={loginLoading}
+        login={login}
+        password={loginPassword}
+        setEmail={setLoginEmail}
+        setPassword={setLoginPassword}
+      />
+    );
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="hero">
+        <div className="hero-overlay">
+          <div>
+            <p className="eyebrow">SJI Glass, Windows & Doors</p>
+            <h1>Glass Estimate Calculator</h1>
+            <p className="hero-copy">Authenticated estimating, pricing, labor, and team controls.</p>
+          </div>
+          <div className="top-actions">
+            <div className="view-switch" aria-label="Application views">
+              <button
+                className={activeView === "estimate" ? "active" : ""}
+                onClick={() => setActiveView("estimate")}
+                type="button"
+              >
+                Estimator
+              </button>
+              <button
+                className={activeView === "saved" ? "active" : ""}
+                onClick={() => setActiveView("saved")}
+                type="button"
+              >
+                Saved Estimates
+              </button>
+              {isAdmin && (
+                <button
+                  className={activeView === "admin" ? "active" : ""}
+                  onClick={() => setActiveView("admin")}
+                  type="button"
+                >
+                  Pricing Settings
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  className={activeView === "team" ? "active" : ""}
+                  onClick={() => setActiveView("team")}
+                  type="button"
+                >
+                  Team Access
+                </button>
+              )}
+            </div>
+            <div className="user-strip">
+              <span>
+                {authUser.name}
+                <small>{isAdmin ? "Admin" : "Team Member"}</small>
+              </span>
+              <button className="ghost-button logout-button" onClick={logout} type="button">
+                Sign out
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {loadError && <div className="alert">{loadError}</div>}
+
+      {activeView === "estimate" && (
+        <EstimatorView
+          addLine={addLine}
+          customerName={customerName}
+          draftLine={draftLine}
+          estimateLines={estimateLines}
+          estimateName={estimateName}
+          lineError={lineError}
+          removeLine={removeLine}
+          saveError={saveError}
+          saveEstimate={saveEstimate}
+          saveMessage={saveMessage}
+          selectedAddOns={selectedAddOns}
+          setCustomerName={setCustomerName}
+          setEstimateName={setEstimateName}
+          settings={settings}
+          taxEnabled={taxEnabled}
+          taxRate={taxRate}
+          toggleAddOn={toggleAddOn}
+          toggleDraftSpec={toggleDraftSpec}
+          totals={totals}
+          updateDraft={updateDraft}
+          laborSelection={laborSelection}
+          setLaborSelection={setLaborSelection}
+          setTaxEnabled={setTaxEnabled}
+          setTaxRate={setTaxRate}
+        />
+      )}
+
+      {activeView === "saved" && (
+        <SavedEstimatesView
+          deleteEstimate={deleteEstimate}
+          estimates={estimates}
+          isAdmin={isAdmin}
+          refreshEstimates={refreshEstimates}
+        />
+      )}
+
+      {activeView === "admin" && isAdmin && (
+        <AdminView
+          addAdminAddOn={addAdminAddOn}
+          adminMessage={adminMessage}
+          adminSettings={adminSettings}
+          adminStatus={adminStatus}
+          removeAdminAddOn={removeAdminAddOn}
+          saveAdminSettings={saveAdminSettings}
+          setAdminSettings={setAdminSettings}
+          updateAdminAddOn={updateAdminAddOn}
+          updateAdminGlassSpec={updateAdminGlassSpec}
+          updateLabor={updateLabor}
+        />
+      )}
+
+      {activeView === "team" && isAdmin && (
+        <TeamAccessView
+          createTeamMember={createTeamMember}
+          deleteTeamMember={deleteTeamMember}
+          patchTeamUser={patchTeamUser}
+          teamDraft={teamDraft}
+          teamError={teamError}
+          teamStatus={teamStatus}
+          setTeamDraft={setTeamDraft}
+          updateTeamMember={updateTeamMember}
+          users={users}
+        />
+      )}
+    </main>
+  );
+}
+
+function LoginView({ email, error, loading, login, password, setEmail, setPassword }: any) {
+  return (
+    <main className="login-shell">
+      <section className="login-hero">
+        <div>
+          <p className="eyebrow">SJI Glass, Windows & Doors</p>
+          <h1>Secure Estimator</h1>
+          <p>Sign in with an approved team account to access estimating tools and protected pricing.</p>
+        </div>
+      </section>
+
+      <section className="login-card">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Team Login</p>
+            <h2>Email and password</h2>
+          </div>
+        </div>
+        <form onSubmit={login}>
+          <label>
+            Email
+            <input
+              autoComplete="email"
+              onChange={(event: any) => setEmail(event.target.value)}
+              required
+              type="email"
+              value={email}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              autoComplete="current-password"
+              onChange={(event: any) => setPassword(event.target.value)}
+              required
+              type="password"
+              value={password}
+            />
+          </label>
+          {error && <p className="field-error">{error}</p>}
+          <button className="primary-button full-button" disabled={loading} type="submit">
+            {loading ? "Signing in..." : "Sign in"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function EstimatorView(props: any) {
+  const {
+    addLine,
+    customerName,
+    draftLine,
+    estimateLines,
+    estimateName,
+    lineError,
+    removeLine,
+    saveError,
+    saveEstimate,
+    saveMessage,
+    selectedAddOns,
+    setCustomerName,
+    setEstimateName,
+    settings,
+    taxEnabled,
+    taxRate,
+    toggleAddOn,
+    toggleDraftSpec,
+    totals,
+    updateDraft,
+    laborSelection,
+    setLaborSelection,
+    setTaxEnabled,
+    setTaxRate
+  } = props;
+
+  return (
+    <div className="page-grid">
+      <section className="panel estimator-panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Estimator</p>
+            <h2>Glass line item</h2>
+          </div>
+          <span className="rate-pill">Markup {measurement(settings.markupMultiplier)}x</span>
+        </div>
+
+        <div className="input-grid">
+          <label>
+            Width in inches
+            <input
+              inputMode="decimal"
+              onChange={(event: any) => updateDraft("width", event.target.value)}
+              placeholder="36 1/2"
+              type="text"
+              value={draftLine.width}
+            />
+          </label>
+          <label>
+            Height in inches
+            <input
+              inputMode="decimal"
+              onChange={(event: any) => updateDraft("height", event.target.value)}
+              placeholder="48 3/4"
+              type="text"
+              value={draftLine.height}
+            />
+          </label>
+          <label>
+            Quantity
+            <input
+              min="1"
+              onChange={(event: any) => updateDraft("quantity", event.target.value)}
+              placeholder="1"
+              step="1"
+              type="number"
+              value={draftLine.quantity}
+            />
+          </label>
+        </div>
+
+        <div className="checkbox-section">
+          <div className="section-label">Glass specifications</div>
+          <div className="checkbox-grid">
+            {settings.glassSpecs.map((spec: GlassSpec) => (
+              <label className="check-option" key={spec.id}>
+                <input
+                  checked={draftLine.specIds.includes(spec.id)}
+                  onChange={() => toggleDraftSpec(spec.id)}
+                  type="checkbox"
+                />
+                <span>{spec.name}</span>
+                <strong>{money(spec.pricePerSqFt)}/sq ft</strong>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {lineError && <p className="field-error">{lineError}</p>}
+
+        <button className="primary-button" onClick={addLine} type="button">
+          Add line item
+        </button>
+
+        <EstimateLines
+          estimateLines={estimateLines}
+          removeLine={removeLine}
+          settings={settings}
+          totals={totals}
+        />
+      </section>
+
+      <aside className="summary-column">
+        <section className="panel">
+          <div className="section-heading compact">
+            <div>
+              <p className="eyebrow">Secure record</p>
+              <h2>Save Estimate</h2>
+            </div>
+          </div>
+          <div className="save-estimate-form">
+            <label>
+              Estimate name
+              <input
+                onChange={(event: any) => setEstimateName(event.target.value)}
+                placeholder="Kitchen window replacement"
+                type="text"
+                value={estimateName}
+              />
+            </label>
+            <label>
+              Customer name
+              <input
+                onChange={(event: any) => setCustomerName(event.target.value)}
+                placeholder="Customer or job name"
+                type="text"
+                value={customerName}
+              />
+            </label>
+            {saveError && <p className="field-error">{saveError}</p>}
+            {saveMessage && <p className="success-copy">{saveMessage}</p>}
+            <button className="secondary-button" onClick={saveEstimate} type="button">
+              Save estimate
+            </button>
+          </div>
+        </section>
+
+        <AddOnsSection
+          selectedAddOns={selectedAddOns}
+          settings={settings}
+          toggleAddOn={toggleAddOn}
+          totals={totals}
+        />
+
+        <LaborSection
+          laborSelection={laborSelection}
+          setLaborSelection={setLaborSelection}
+          settings={settings}
+          totals={totals}
+        />
+
+        <EstimateSummary
+          settings={settings}
+          taxEnabled={taxEnabled}
+          taxRate={taxRate}
+          totals={totals}
+          setTaxEnabled={setTaxEnabled}
+          setTaxRate={setTaxRate}
+        />
+      </aside>
+    </div>
+  );
+}
+
+function EstimateLines({ estimateLines, removeLine, settings, totals }: any) {
+  return (
+    <section className="line-list">
+      <div className="section-heading compact">
+        <div>
+          <p className="eyebrow">Estimate</p>
+          <h2>Glass items</h2>
+        </div>
+        <span className="muted">{estimateLines.length} line(s)</span>
+      </div>
+
+      {!estimateLines.length ? (
+        <div className="empty-state">Add the first glass line item to begin the estimate.</div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Size</th>
+                <th>Qty</th>
+                <th>Sq ft</th>
+                <th>Specs</th>
+                <th>Price / sq ft</th>
+                <th>Line total</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {totals.lineCalculations.map((item: any) => (
+                <tr key={item.line.id}>
+                  <td data-label="Size">
+                    {measurement(item.line.width)} x {measurement(item.line.height)} in
+                  </td>
+                  <td data-label="Qty">{measurement(item.line.quantity)}</td>
+                  <td data-label="Sq ft">
+                    <strong>{measurement(item.unitSqFt)}</strong> each
+                    <span>{measurement(item.totalSqFt)} total</span>
+                  </td>
+                  <td data-label="Specs">{specNames(item.line, settings)}</td>
+                  <td data-label="Price / sq ft">{money(item.pricePerSqFt)}</td>
+                  <td data-label="Line total">{money(item.subtotal)}</td>
+                  <td>
+                    <button
+                      className="ghost-button small"
+                      onClick={() => removeLine(item.line.id)}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AddOnsSection({ selectedAddOns, settings, toggleAddOn, totals }: any) {
+  return (
+    <section className="panel">
+      <div className="section-heading compact">
+        <div>
+          <p className="eyebrow">Extras</p>
+          <h2>Add-ons</h2>
+        </div>
+      </div>
+      <div className="checkbox-list">
+        {settings.addOns.length ? (
+          settings.addOns.map((addOn: AddOn) => {
+            const calculated = calculateAddOn(addOn, totals.totalSqFt, totals.totalQuantity);
+            return (
+              <label className="check-option stacked" key={addOn.id}>
+                <input
+                  checked={selectedAddOns.includes(addOn.id)}
+                  onChange={() => toggleAddOn(addOn.id)}
+                  type="checkbox"
+                />
+                <span>
+                  {addOn.name}
+                  <small>{costTypeLabels[addOn.costType]} - {calculated.basis}</small>
+                </span>
+                <strong>{money(calculated.total)}</strong>
+              </label>
+            );
+          })
+        ) : (
+          <div className="empty-state tight">No add-ons are configured.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function LaborSection({ laborSelection, setLaborSelection, settings, totals }: any) {
+  const hoursDisabled = !settings.labor.hourly.enabled;
+  const perSqFtDisabled = !settings.labor.perSquareFoot.enabled;
+  const flatDisabled = !settings.labor.flatFee.enabled;
+
+  function patchLabor(patch: Partial<LaborSelection>) {
+    setLaborSelection((current: LaborSelection) => ({ ...current, ...patch }));
+  }
+
+  return (
+    <section className="panel">
+      <div className="section-heading compact">
+        <div>
+          <p className="eyebrow">Install</p>
+          <h2>Labor Calculator</h2>
+        </div>
+      </div>
+
+      <div className="checkbox-list">
+        <label className={`check-option stacked ${hoursDisabled ? "disabled" : ""}`}>
+          <input
+            checked={laborSelection.useHours}
+            disabled={hoursDisabled}
+            onChange={(event: any) => patchLabor({ useHours: event.target.checked })}
+            type="checkbox"
+          />
+          <span>
+            Labor by hours
+            <small>{money(settings.labor.hourly.rate)} per hour</small>
+          </span>
+        </label>
+        {laborSelection.useHours && !hoursDisabled && (
+          <label className="inline-input">
+            Labor hours
+            <input
+              min="0"
+              onChange={(event: any) => patchLabor({ hours: event.target.value })}
+              placeholder="0"
+              step="0.25"
+              type="number"
+              value={laborSelection.hours}
+            />
+          </label>
+        )}
+
+        <label className={`check-option stacked ${perSqFtDisabled ? "disabled" : ""}`}>
+          <input
+            checked={laborSelection.useSquareFoot}
+            disabled={perSqFtDisabled}
+            onChange={(event: any) => patchLabor({ useSquareFoot: event.target.checked })}
+            type="checkbox"
+          />
+          <span>
+            Labor by square footage
+            <small>
+              {money(settings.labor.perSquareFoot.rate)} x {measurement(totals.totalSqFt)} sq ft
+            </small>
+          </span>
+          <strong>{money(totals.totalSqFt * settings.labor.perSquareFoot.rate)}</strong>
+        </label>
+
+        <label className={`check-option stacked ${flatDisabled ? "disabled" : ""}`}>
+          <input
+            checked={laborSelection.useFlatFee}
+            disabled={flatDisabled}
+            onChange={(event: any) => patchLabor({ useFlatFee: event.target.checked })}
+            type="checkbox"
+          />
+          <span>
+            Labor flat fee
+            <small>Configured flat labor amount</small>
+          </span>
+          <strong>{money(settings.labor.flatFee.fee)}</strong>
+        </label>
+      </div>
+    </section>
+  );
+}
+
+function EstimateSummary({ settings, taxEnabled, taxRate, totals, setTaxEnabled, setTaxRate }: any) {
+  return (
+    <section className="summary-card">
+      <div className="section-heading compact">
+        <div>
+          <p className="eyebrow">Customer estimate</p>
+          <h2>Total</h2>
+        </div>
+      </div>
+
+      <div className="summary-lines">
+        <SummaryRow label="Total square footage" value={`${measurement(totals.totalSqFt)} sq ft`} />
+        <SummaryRow label="Total quantity" value={measurement(totals.totalQuantity)} />
+        <SummaryRow label="Glass subtotal" value={money(totals.glassSubtotal)} />
+        <SummaryRow
+          label={`Glass with markup (${measurement(settings.markupMultiplier)}x)`}
+          value={money(totals.glassTotalWithMarkup)}
+        />
+        <SummaryRow label="Add-ons total" value={money(totals.addOnsTotal)} />
+        {totals.addOnTotals.map((item: AddOnTotal) => (
+          <SummaryRow key={item.addOn.id} label={item.addOn.name} value={money(item.total)} small />
+        ))}
+        <SummaryRow label="Labor total" value={money(totals.laborTotal)} />
+        {totals.laborRows.map((row: any) => (
+          <SummaryRow key={row.label} label={row.label} value={money(row.total)} small />
+        ))}
+        <SummaryRow label="Estimate subtotal" value={money(totals.preTaxTotal)} strong />
+      </div>
+
+      <div className="tax-controls">
+        <label className="toggle-row">
+          <input
+            checked={taxEnabled}
+            onChange={(event: any) => setTaxEnabled(event.target.checked)}
+            type="checkbox"
+          />
+          Apply tax
+        </label>
+        <label>
+          Tax rate (%)
+          <input
+            min="0"
+            onChange={(event: any) => setTaxRate(event.target.value)}
+            step="0.01"
+            type="number"
+            value={taxRate}
+          />
+        </label>
+      </div>
+
+      <div className="grand-total">
+        <span>Grand total</span>
+        <strong>{money(totals.grandTotal)}</strong>
+      </div>
+      {taxEnabled && <p className="muted tight-copy">Includes {money(totals.taxAmount)} tax.</p>}
+    </section>
+  );
+}
+
+function SummaryRow({ label, value, small = false, strong = false }: any) {
+  return (
+    <div className={`summary-row ${small ? "small" : ""} ${strong ? "strong" : ""}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function SavedEstimatesView({ deleteEstimate, estimates, isAdmin, refreshEstimates }: any) {
+  return (
+    <section className="panel max-panel">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Estimates</p>
+          <h2>Saved Estimates</h2>
+        </div>
+        <button className="secondary-button compact-button" onClick={refreshEstimates} type="button">
+          Refresh
+        </button>
+      </div>
+
+      {!estimates.length ? (
+        <div className="empty-state">No saved estimates yet.</div>
+      ) : (
+        <div className="estimate-card-grid">
+          {estimates.map((estimate: SavedEstimate) => (
+            <article className="estimate-card" key={estimate.id}>
+              <div>
+                <p className="eyebrow">{estimate.customerName || "Customer estimate"}</p>
+                <h3>{estimate.name}</h3>
+                <p className="muted">
+                  {formatDate(estimate.createdAt)} by {estimate.createdByName}
+                </p>
+              </div>
+              <div className="estimate-metrics">
+                <SummaryRow label="Glass with markup" value={money(estimate.totals.glassTotalWithMarkup)} />
+                <SummaryRow label="Add-ons" value={money(estimate.totals.addOnsTotal)} />
+                <SummaryRow label="Labor" value={money(estimate.totals.laborTotal)} />
+                <SummaryRow label="Grand total" value={money(estimate.totals.grandTotal)} strong />
+              </div>
+              <p className="muted tight-copy">
+                {measurement(estimate.totals.totalSqFt)} sq ft across {measurement(estimate.totals.totalQuantity)} item(s)
+              </p>
+              {isAdmin && (
+                <button className="ghost-button" onClick={() => deleteEstimate(estimate.id)} type="button">
+                  Delete estimate
+                </button>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AdminView(props: any) {
+  const {
+    addAdminAddOn,
+    adminMessage,
+    adminSettings,
+    adminStatus,
+    removeAdminAddOn,
+    saveAdminSettings,
+    setAdminSettings,
+    updateAdminAddOn,
+    updateAdminGlassSpec,
+    updateLabor
+  } = props;
+
+  return (
+    <div className="admin-layout">
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Pricing Settings</p>
+            <h2>Glass Specs</h2>
+          </div>
+          <button className="primary-button compact-button" onClick={saveAdminSettings} type="button">
+            {adminStatus === "saving" ? "Saving..." : "Save settings"}
+          </button>
+        </div>
+
+        {adminMessage && (
+          <div className={`status-message ${adminStatus === "error" ? "error" : "success"}`}>
+            {adminMessage}
+          </div>
+        )}
+
+        <div className="settings-table">
+          <div className="settings-row header">
+            <span>Specification</span>
+            <span>Price per square foot</span>
+          </div>
+          {adminSettings.glassSpecs.map((spec: GlassSpec) => (
+            <div className="settings-row" key={spec.id}>
+              <label>
+                Name
+                <input
+                  onChange={(event: any) => updateAdminGlassSpec(spec.id, "name", event.target.value)}
+                  type="text"
+                  value={spec.name}
+                />
+              </label>
+              <label>
+                Price / sq ft
+                <input
+                  min="0"
+                  onChange={(event: any) =>
+                    updateAdminGlassSpec(spec.id, "pricePerSqFt", event.target.value)
+                  }
+                  step="0.01"
+                  type="number"
+                  value={spec.pricePerSqFt}
+                />
+              </label>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Markup</p>
+            <h2>Estimate Settings</h2>
+          </div>
+        </div>
+        <div className="input-grid two">
+          <label>
+            Markup multiplier
+            <input
+              min="0.01"
+              onChange={(event: any) =>
+                setAdminSettings((current: PricingSettings) => ({
+                  ...current,
+                  markupMultiplier: normalizeNumber(event.target.value)
+                }))
+              }
+              step="0.01"
+              type="number"
+              value={adminSettings.markupMultiplier}
+            />
+          </label>
+          <label>
+            Default tax rate (%)
+            <input
+              min="0"
+              onChange={(event: any) =>
+                setAdminSettings((current: PricingSettings) => ({
+                  ...current,
+                  defaultTaxRate: normalizeNumber(event.target.value)
+                }))
+              }
+              step="0.01"
+              type="number"
+              value={adminSettings.defaultTaxRate}
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Extras</p>
+            <h2>Add-ons</h2>
+          </div>
+          <button className="secondary-button compact-button" onClick={addAdminAddOn} type="button">
+            Add add-on
+          </button>
+        </div>
+
+        <div className="settings-table">
+          <div className="settings-row header add-on">
+            <span>Name</span>
+            <span>Cost</span>
+            <span>Cost type</span>
+            <span></span>
+          </div>
+          {adminSettings.addOns.map((addOn: AddOn) => (
+            <div className="settings-row add-on" key={addOn.id}>
+              <label>
+                Name
+                <input
+                  onChange={(event: any) => updateAdminAddOn(addOn.id, "name", event.target.value)}
+                  type="text"
+                  value={addOn.name}
+                />
+              </label>
+              <label>
+                Cost
+                <input
+                  min="0"
+                  onChange={(event: any) => updateAdminAddOn(addOn.id, "cost", event.target.value)}
+                  step="0.01"
+                  type="number"
+                  value={addOn.cost}
+                />
+              </label>
+              <label>
+                Cost type
+                <select
+                  onChange={(event: any) => updateAdminAddOn(addOn.id, "costType", event.target.value)}
+                  value={addOn.costType}
+                >
+                  <option value="flat">Flat fee</option>
+                  <option value="per_sq_ft">Per square foot</option>
+                  <option value="per_item">Per item/quantity</option>
+                </select>
+              </label>
+              <button className="ghost-button" onClick={() => removeAdminAddOn(addOn.id)} type="button">
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Labor</p>
+            <h2>Labor Pricing</h2>
+          </div>
+        </div>
+
+        <div className="labor-settings">
+          <div className="labor-setting-row">
+            <label className="toggle-row">
+              <input
+                checked={adminSettings.labor.hourly.enabled}
+                onChange={(event: any) => updateLabor("hourly", "enabled", event.target.checked)}
+                type="checkbox"
+              />
+              Enable hourly labor
+            </label>
+            <label>
+              Hourly rate
+              <input
+                min="0"
+                onChange={(event: any) => updateLabor("hourly", "rate", event.target.value)}
+                step="0.01"
+                type="number"
+                value={adminSettings.labor.hourly.rate}
+              />
+            </label>
+          </div>
+
+          <div className="labor-setting-row">
+            <label className="toggle-row">
+              <input
+                checked={adminSettings.labor.perSquareFoot.enabled}
+                onChange={(event: any) =>
+                  updateLabor("perSquareFoot", "enabled", event.target.checked)
+                }
+                type="checkbox"
+              />
+              Enable labor per square foot
+            </label>
+            <label>
+              Labor rate / sq ft
+              <input
+                min="0"
+                onChange={(event: any) => updateLabor("perSquareFoot", "rate", event.target.value)}
+                step="0.01"
+                type="number"
+                value={adminSettings.labor.perSquareFoot.rate}
+              />
+            </label>
+          </div>
+
+          <div className="labor-setting-row">
+            <label className="toggle-row">
+              <input
+                checked={adminSettings.labor.flatFee.enabled}
+                onChange={(event: any) => updateLabor("flatFee", "enabled", event.target.checked)}
+                type="checkbox"
+              />
+              Enable flat labor fee
+            </label>
+            <label>
+              Flat labor fee
+              <input
+                min="0"
+                onChange={(event: any) => updateLabor("flatFee", "fee", event.target.value)}
+                step="0.01"
+                type="number"
+                value={adminSettings.labor.flatFee.fee}
+              />
+            </label>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TeamAccessView(props: any) {
+  const {
+    createTeamMember,
+    deleteTeamMember,
+    patchTeamUser,
+    teamDraft,
+    teamError,
+    teamStatus,
+    setTeamDraft,
+    updateTeamMember,
+    users
+  } = props;
+
+  return (
+    <div className="admin-layout">
+      <section className="panel">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Access Control</p>
+            <h2>Create Team Member</h2>
+          </div>
+        </div>
+        <div className="input-grid two">
+          <label>
+            Name
+            <input
+              onChange={(event: any) => setTeamDraft((current: any) => ({ ...current, name: event.target.value }))}
+              type="text"
+              value={teamDraft.name}
+            />
+          </label>
+          <label>
+            Email
+            <input
+              onChange={(event: any) => setTeamDraft((current: any) => ({ ...current, email: event.target.value }))}
+              type="email"
+              value={teamDraft.email}
+            />
+          </label>
+          <label>
+            Temporary password
+            <input
+              onChange={(event: any) => setTeamDraft((current: any) => ({ ...current, password: event.target.value }))}
+              type="password"
+              value={teamDraft.password}
+            />
+          </label>
+          <label>
+            Role
+            <select
+              onChange={(event: any) => setTeamDraft((current: any) => ({ ...current, role: event.target.value }))}
+              value={teamDraft.role}
+            >
+              <option value="team_member">Team Member</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
+        </div>
+        {teamError && <p className="field-error">{teamError}</p>}
+        {teamStatus && <p className="success-copy">{teamStatus}</p>}
+        <button className="primary-button" onClick={createTeamMember} type="button">
+          Create access
+        </button>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Directory</p>
+            <h2>Team Members</h2>
+          </div>
+        </div>
+        <div className="settings-table">
+          <div className="settings-row header team-row">
+            <span>Name</span>
+            <span>Email</span>
+            <span>Role</span>
+            <span>Status</span>
+            <span>Password</span>
+            <span></span>
+          </div>
+          {users.map((user: TeamUser) => (
+            <div className="settings-row team-row" key={user.id}>
+              <label>
+                Name
+                <input
+                  onChange={(event: any) => patchTeamUser(user.id, { name: event.target.value })}
+                  type="text"
+                  value={user.name}
+                />
+              </label>
+              <label>
+                Email
+                <input
+                  onChange={(event: any) => patchTeamUser(user.id, { email: event.target.value })}
+                  type="email"
+                  value={user.email}
+                />
+              </label>
+              <label>
+                Role
+                <select
+                  onChange={(event: any) => patchTeamUser(user.id, { role: event.target.value })}
+                  value={user.role}
+                >
+                  <option value="team_member">Team Member</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <label className="toggle-row">
+                <input
+                  checked={user.active}
+                  onChange={(event: any) => patchTeamUser(user.id, { active: event.target.checked })}
+                  type="checkbox"
+                />
+                Active
+              </label>
+              <label>
+                Reset password
+                <input
+                  onChange={(event: any) => patchTeamUser(user.id, { passwordReset: event.target.value })}
+                  placeholder="Leave blank"
+                  type="password"
+                  value={user.passwordReset || ""}
+                />
+              </label>
+              <div className="row-actions">
+                <button className="secondary-button" onClick={() => updateTeamMember(user)} type="button">
+                  Save
+                </button>
+                <button className="ghost-button" onClick={() => deleteTeamMember(user.id)} type="button">
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);

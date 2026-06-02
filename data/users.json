@@ -1,0 +1,12 @@
+[
+  {
+    "id": "67a34f24-1135-4590-946f-223a9a58312c",
+    "email": "admin@sjiglass.local",
+    "name": "SJI Admin",
+    "role": "admin",
+    "active": true,
+    "passwordHash": "scrypt:501a695baa4b5d4435bf6f5cbc102bcf:1ee5d1fd0a8b8ffd51d20ee9f7d4288498f8d5fa2bbfda603a73b58989c25db63f134b509bb77f02a6acac62a4dd1489c04fbfe508f5eb03a20f260e2825f895",
+    "createdAt": "2026-05-27T18:52:17.131Z",
+    "updatedAt": "2026-05-27T18:52:17.131Z"
+  }
+]

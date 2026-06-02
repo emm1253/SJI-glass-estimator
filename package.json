@@ -1,0 +1,15 @@
+{
+  "name": "sji-glass-estimator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SJI Glass, Windows & Doors estimating app with configurable pricing settings.",
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "scripts": {
+    "build": "node scripts/build-app.mjs",
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  }
+}
