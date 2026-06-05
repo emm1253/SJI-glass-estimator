@@ -48,32 +48,10 @@
       "pricePerSqFt": 1.75
     }
   ],
-  "addOns": [
-    {
-      "id": "logistics",
-      "name": "Logistics",
-      "cost": 85,
-      "costType": "flat"
-    },
-    {
-      "id": "disposal",
-      "name": "Disposal",
-      "cost": 12,
-      "costType": "per_item"
-    }
-  ],
-  "labor": {
-    "hourly": {
-      "enabled": true,
-      "rate": 95
-    },
-    "perSquareFoot": {
-      "enabled": true,
-      "rate": 4.5
-    },
-    "flatFee": {
-      "enabled": true,
-      "fee": 175
-    }
+  "addOns": [],
+  "jobCosts": {
+    "laborHourlyRate": 95,
+    "logisticsHourlyRate": 85,
+    "disposalHourlyRate": 65
   }
 }

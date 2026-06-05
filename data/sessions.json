@@ -1,26 +1,10 @@
 [
   {
-    "id": "40b1e4f3-4983-4071-b85c-f55eaf432cc0",
-    "tokenHash": "3766a6303eeeb758fa3b47f98cef14348a9dc17f2aa80f06f2d5d8f0760419f1",
+    "id": "13837016-8bc3-4789-b7d8-a0448ece0bd9",
+    "tokenHash": "6a1fca8302203d395b61f75c0e6f5f4f35b6b2adc41c1b534a50590a9d861100",
     "userId": "67a34f24-1135-4590-946f-223a9a58312c",
-    "createdAt": "2026-05-27T18:53:29.991Z",
-    "expiresAt": "2026-05-28T02:53:29.991Z",
-    "userAgent": "node"
-  },
-  {
-    "id": "2889802f-fc87-4a5e-ba82-1677da1e018e",
-    "tokenHash": "f3d780673713b4eafc9058cfc222dbff15e8650ebe5145708a7b717974ba2b9b",
-    "userId": "67a34f24-1135-4590-946f-223a9a58312c",
-    "createdAt": "2026-05-27T18:53:58.630Z",
-    "expiresAt": "2026-05-28T02:53:58.630Z",
-    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Codex/26.519.81530 Chrome/148.0.7778.97 Electron/42.1.0 Safari/537.36"
-  },
-  {
-    "id": "c5e42422-6517-4894-93c4-0252706202ff",
-    "tokenHash": "a83b56ec219dd25dd6c8523be9ba7c58beac8a40588453a4c58f5169e6c55b5c",
-    "userId": "1bcbd865-0162-4958-af94-45d89efc8d39",
-    "createdAt": "2026-05-27T18:54:38.842Z",
-    "expiresAt": "2026-05-28T02:54:38.842Z",
-    "userAgent": "node"
+    "createdAt": "2026-06-03T19:21:52.001Z",
+    "expiresAt": "2026-06-04T03:21:52.001Z",
+    "userAgent": "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US) WindowsPowerShell/5.1.26100.8457"
   }
 ]
