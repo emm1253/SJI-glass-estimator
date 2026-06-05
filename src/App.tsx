@@ -34,19 +34,10 @@ type AddOn = {
   costType: CostType;
 };
 
-type LaborSettings = {
-  hourly: {
-    enabled: boolean;
-    rate: number;
-  };
-  perSquareFoot: {
-    enabled: boolean;
-    rate: number;
-  };
-  flatFee: {
-    enabled: boolean;
-    fee: number;
-  };
+type JobCostSettings = {
+  laborHourlyRate: number;
+  logisticsHourlyRate: number;
+  disposalHourlyRate: number;
 };
 
 type PricingSettings = {
@@ -54,7 +45,7 @@ type PricingSettings = {
   defaultTaxRate: number;
   glassSpecs: GlassSpec[];
   addOns: AddOn[];
-  labor: LaborSettings;
+  jobCosts: JobCostSettings;
 };
 
 type EstimateLine = {
@@ -78,11 +69,10 @@ type AddOnTotal = {
   basis: string;
 };
 
-type LaborSelection = {
-  useHours: boolean;
-  hours: string;
-  useSquareFoot: boolean;
-  useFlatFee: boolean;
+type JobCosts = {
+  laborHours: string;
+  logisticsHours: string;
+  disposalHours: string;
 };
 
 type SavedEstimate = {
@@ -98,6 +88,8 @@ type SavedEstimate = {
     glassTotalWithMarkup: number;
     addOnsTotal: number;
     laborTotal: number;
+    logisticsTotal: number;
+    disposalTotal: number;
     preTaxTotal: number;
     taxAmount: number;
     grandTotal: number;
@@ -120,14 +112,11 @@ const fallbackSettings: PricingSettings = {
     { id: "eighth-over-eighth", name: "1/8 over 1/8", pricePerSqFt: 2.5 },
     { id: "sixteenth-over-sixteenth", name: "1/16 over 1/16", pricePerSqFt: 1.75 }
   ],
-  addOns: [
-    { id: "logistics", name: "Logistics", cost: 85, costType: "flat" },
-    { id: "disposal", name: "Disposal", cost: 12, costType: "per_item" }
-  ],
-  labor: {
-    hourly: { enabled: true, rate: 95 },
-    perSquareFoot: { enabled: true, rate: 4.5 },
-    flatFee: { enabled: true, fee: 175 }
+  addOns: [],
+  jobCosts: {
+    laborHourlyRate: 95,
+    logisticsHourlyRate: 85,
+    disposalHourlyRate: 65
   }
 };
 
@@ -312,11 +301,10 @@ function App() {
   const [lineError, setLineError] = useState("");
   const [estimateLines, setEstimateLines] = useState<EstimateLine[]>([]);
   const [selectedAddOns, setSelectedAddOns] = useState<string[]>([]);
-  const [laborSelection, setLaborSelection] = useState<LaborSelection>({
-    useHours: false,
-    hours: "",
-    useSquareFoot: false,
-    useFlatFee: false
+  const [jobCosts, setJobCosts] = useState<JobCosts>({
+    laborHours: "",
+    logisticsHours: "",
+    disposalHours: ""
   });
   const [taxEnabled, setTaxEnabled] = useState(false);
   const [taxRate, setTaxRate] = useState("0");
@@ -469,32 +457,13 @@ function App() {
       .filter((addOn) => selectedAddOns.includes(addOn.id))
       .map((addOn) => calculateAddOn(addOn, totalSqFt, totalQuantity));
     const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
-    const hours = normalizeNumber(laborSelection.hours);
-    const laborRows = [
-      laborSelection.useHours && settings.labor.hourly.enabled
-        ? {
-            label: "Labor by hours",
-            basis: `${measurement(hours)} hrs x ${money(settings.labor.hourly.rate)}/hr`,
-            total: hours * settings.labor.hourly.rate
-          }
-        : null,
-      laborSelection.useSquareFoot && settings.labor.perSquareFoot.enabled
-        ? {
-            label: "Labor by square footage",
-            basis: `${measurement(totalSqFt)} sq ft x ${money(settings.labor.perSquareFoot.rate)}/sq ft`,
-            total: totalSqFt * settings.labor.perSquareFoot.rate
-          }
-        : null,
-      laborSelection.useFlatFee && settings.labor.flatFee.enabled
-        ? {
-            label: "Labor flat fee",
-            basis: "Flat labor fee",
-            total: settings.labor.flatFee.fee
-          }
-        : null
-    ].filter(Boolean);
-    const laborTotal = laborRows.reduce((total: number, row: any) => total + row.total, 0);
-    const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal;
+    const laborHours = normalizeNumber(jobCosts.laborHours);
+    const logisticsHours = normalizeNumber(jobCosts.logisticsHours);
+    const disposalHours = normalizeNumber(jobCosts.disposalHours);
+    const laborTotal = laborHours * settings.jobCosts.laborHourlyRate;
+    const logisticsTotal = logisticsHours * settings.jobCosts.logisticsHourlyRate;
+    const disposalTotal = disposalHours * settings.jobCosts.disposalHourlyRate;
+    const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal;
     const taxAmount = taxEnabled ? preTaxTotal * (normalizeNumber(taxRate) / 100) : 0;
     const grandTotal = preTaxTotal + taxAmount;
 
@@ -506,13 +475,14 @@ function App() {
       glassTotalWithMarkup,
       addOnTotals,
       addOnsTotal,
-      laborRows,
       laborTotal,
+      logisticsTotal,
+      disposalTotal,
       preTaxTotal,
       taxAmount,
       grandTotal
     };
-  }, [estimateLines, laborSelection, selectedAddOns, settings, taxEnabled, taxRate]);
+  }, [estimateLines, jobCosts, selectedAddOns, settings, taxEnabled, taxRate]);
 
   function updateDraft(field: keyof DraftLine, value: string | string[]) {
     setDraftLine((current) => ({
@@ -588,7 +558,7 @@ function App() {
           customerName,
           lines: estimateLines,
           selectedAddOns,
-          laborSelection,
+          jobCosts,
           taxEnabled,
           taxRate
         })
@@ -669,16 +639,13 @@ function App() {
     }));
   }
 
-  function updateLabor(method: keyof LaborSettings, field: string, value: string | boolean) {
+  function updateJobCostRate(field: keyof JobCostSettings, value: string) {
     setAdminStatus("idle");
     setAdminSettings((current) => ({
       ...current,
-      labor: {
-        ...current.labor,
-        [method]: {
-          ...current.labor[method],
-          [field]: typeof value === "boolean" ? value : normalizeNumber(value)
-        }
+      jobCosts: {
+        ...current.jobCosts,
+        [field]: normalizeNumber(value)
       }
     }));
   }
@@ -718,12 +685,19 @@ function App() {
         name: spec.name.trim(),
         pricePerSqFt: normalizeNumber(spec.pricePerSqFt)
       })),
-      addOns: adminSettings.addOns.map((addOn, index) => ({
-        ...addOn,
-        id: slugify(addOn.id || addOn.name, `add-on-${index + 1}`),
-        name: addOn.name.trim(),
-        cost: normalizeNumber(addOn.cost)
-      }))
+      addOns: adminSettings.addOns
+        .filter((addOn) => !["logistics", "disposal"].includes(slugify(addOn.id || addOn.name, "")))
+        .map((addOn, index) => ({
+          ...addOn,
+          id: slugify(addOn.id || addOn.name, `add-on-${index + 1}`),
+          name: addOn.name.trim(),
+          cost: normalizeNumber(addOn.cost)
+        })),
+      jobCosts: {
+        laborHourlyRate: normalizeNumber(adminSettings.jobCosts.laborHourlyRate),
+        logisticsHourlyRate: normalizeNumber(adminSettings.jobCosts.logisticsHourlyRate),
+        disposalHourlyRate: normalizeNumber(adminSettings.jobCosts.disposalHourlyRate)
+      }
     };
 
     const validationError = validateAdmin(prepared);
@@ -911,8 +885,8 @@ function App() {
           toggleDraftSpec={toggleDraftSpec}
           totals={totals}
           updateDraft={updateDraft}
-          laborSelection={laborSelection}
-          setLaborSelection={setLaborSelection}
+          jobCosts={jobCosts}
+          setJobCosts={setJobCosts}
           setTaxEnabled={setTaxEnabled}
           setTaxRate={setTaxRate}
         />
@@ -938,7 +912,7 @@ function App() {
           setAdminSettings={setAdminSettings}
           updateAdminAddOn={updateAdminAddOn}
           updateAdminGlassSpec={updateAdminGlassSpec}
-          updateLabor={updateLabor}
+          updateJobCostRate={updateJobCostRate}
         />
       )}
 
@@ -1030,8 +1004,8 @@ function EstimatorView(props: any) {
     toggleDraftSpec,
     totals,
     updateDraft,
-    laborSelection,
-    setLaborSelection,
+    jobCosts,
+    setJobCosts,
     setTaxEnabled,
     setTaxRate
   } = props;
@@ -1154,9 +1128,9 @@ function EstimatorView(props: any) {
           totals={totals}
         />
 
-        <LaborSection
-          laborSelection={laborSelection}
-          setLaborSelection={setLaborSelection}
+        <JobCostsSection
+          jobCosts={jobCosts}
+          setJobCosts={setJobCosts}
           settings={settings}
           totals={totals}
         />
@@ -1270,80 +1244,72 @@ function AddOnsSection({ selectedAddOns, settings, toggleAddOn, totals }: any) {
   );
 }
 
-function LaborSection({ laborSelection, setLaborSelection, settings, totals }: any) {
-  const hoursDisabled = !settings.labor.hourly.enabled;
-  const perSqFtDisabled = !settings.labor.perSquareFoot.enabled;
-  const flatDisabled = !settings.labor.flatFee.enabled;
-
-  function patchLabor(patch: Partial<LaborSelection>) {
-    setLaborSelection((current: LaborSelection) => ({ ...current, ...patch }));
+function JobCostsSection({ jobCosts, setJobCosts, settings, totals }: any) {
+  function patchJobCosts(patch: Partial<JobCosts>) {
+    setJobCosts((current: JobCosts) => ({ ...current, ...patch }));
   }
 
   return (
     <section className="panel">
       <div className="section-heading compact">
         <div>
-          <p className="eyebrow">Install</p>
-          <h2>Labor Calculator</h2>
+          <p className="eyebrow">Hourly work</p>
+          <h2>Job Costs</h2>
         </div>
       </div>
 
-      <div className="checkbox-list">
-        <label className={`check-option stacked ${hoursDisabled ? "disabled" : ""}`}>
+      <div className="input-grid">
+        <label>
+          Labor hours
           <input
-            checked={laborSelection.useHours}
-            disabled={hoursDisabled}
-            onChange={(event: any) => patchLabor({ useHours: event.target.checked })}
-            type="checkbox"
+            min="0"
+            onChange={(event: any) => patchJobCosts({ laborHours: event.target.value })}
+            placeholder="0"
+            step="0.25"
+            type="number"
+            value={jobCosts.laborHours}
           />
-          <span>
-            Labor by hours
-            <small>{money(settings.labor.hourly.rate)} per hour</small>
-          </span>
         </label>
-        {laborSelection.useHours && !hoursDisabled && (
-          <label className="inline-input">
-            Labor hours
-            <input
-              min="0"
-              onChange={(event: any) => patchLabor({ hours: event.target.value })}
-              placeholder="0"
-              step="0.25"
-              type="number"
-              value={laborSelection.hours}
-            />
-          </label>
-        )}
+        <label>
+          Logistics hours
+          <input
+            min="0"
+            onChange={(event: any) => patchJobCosts({ logisticsHours: event.target.value })}
+            placeholder="0"
+            step="0.25"
+            type="number"
+            value={jobCosts.logisticsHours}
+          />
+        </label>
+        <label>
+          Disposal hours
+          <input
+            min="0"
+            onChange={(event: any) => patchJobCosts({ disposalHours: event.target.value })}
+            placeholder="0"
+            step="0.25"
+            type="number"
+            value={jobCosts.disposalHours}
+          />
+        </label>
+      </div>
 
-        <label className={`check-option stacked ${perSqFtDisabled ? "disabled" : ""}`}>
-          <input
-            checked={laborSelection.useSquareFoot}
-            disabled={perSqFtDisabled}
-            onChange={(event: any) => patchLabor({ useSquareFoot: event.target.checked })}
-            type="checkbox"
-          />
-          <span>
-            Labor by square footage
-            <small>
-              {money(settings.labor.perSquareFoot.rate)} x {measurement(totals.totalSqFt)} sq ft
-            </small>
-          </span>
-          <strong>{money(totals.totalSqFt * settings.labor.perSquareFoot.rate)}</strong>
-        </label>
-
-        <label className={`check-option stacked ${flatDisabled ? "disabled" : ""}`}>
-          <input
-            checked={laborSelection.useFlatFee}
-            disabled={flatDisabled}
-            onChange={(event: any) => patchLabor({ useFlatFee: event.target.checked })}
-            type="checkbox"
-          />
-          <span>
-            Labor flat fee
-            <small>Configured flat labor amount</small>
-          </span>
-          <strong>{money(settings.labor.flatFee.fee)}</strong>
-        </label>
+      <div className="summary-lines job-cost-preview">
+        <SummaryRow
+          label={`Labor @ ${money(settings.jobCosts.laborHourlyRate)}/hr`}
+          value={money(totals.laborTotal)}
+          small
+        />
+        <SummaryRow
+          label={`Logistics @ ${money(settings.jobCosts.logisticsHourlyRate)}/hr`}
+          value={money(totals.logisticsTotal)}
+          small
+        />
+        <SummaryRow
+          label={`Disposal @ ${money(settings.jobCosts.disposalHourlyRate)}/hr`}
+          value={money(totals.disposalTotal)}
+          small
+        />
       </div>
     </section>
   );
@@ -1372,9 +1338,8 @@ function EstimateSummary({ settings, taxEnabled, taxRate, totals, setTaxEnabled,
           <SummaryRow key={item.addOn.id} label={item.addOn.name} value={money(item.total)} small />
         ))}
         <SummaryRow label="Labor total" value={money(totals.laborTotal)} />
-        {totals.laborRows.map((row: any) => (
-          <SummaryRow key={row.label} label={row.label} value={money(row.total)} small />
-        ))}
+        <SummaryRow label="Logistics total" value={money(totals.logisticsTotal)} />
+        <SummaryRow label="Disposal total" value={money(totals.disposalTotal)} />
         <SummaryRow label="Estimate subtotal" value={money(totals.preTaxTotal)} strong />
       </div>
 
@@ -1447,6 +1412,8 @@ function SavedEstimatesView({ deleteEstimate, estimates, isAdmin, refreshEstimat
                 <SummaryRow label="Glass with markup" value={money(estimate.totals.glassTotalWithMarkup)} />
                 <SummaryRow label="Add-ons" value={money(estimate.totals.addOnsTotal)} />
                 <SummaryRow label="Labor" value={money(estimate.totals.laborTotal)} />
+                <SummaryRow label="Logistics" value={money(estimate.totals.logisticsTotal)} />
+                <SummaryRow label="Disposal" value={money(estimate.totals.disposalTotal)} />
                 <SummaryRow label="Grand total" value={money(estimate.totals.grandTotal)} strong />
               </div>
               <p className="muted tight-copy">
@@ -1476,7 +1443,7 @@ function AdminView(props: any) {
     setAdminSettings,
     updateAdminAddOn,
     updateAdminGlassSpec,
-    updateLabor
+    updateJobCostRate
   } = props;
 
   return (
@@ -1631,76 +1598,42 @@ function AdminView(props: any) {
       <section className="panel">
         <div className="section-heading compact">
           <div>
-            <p className="eyebrow">Labor</p>
-            <h2>Labor Pricing</h2>
+            <p className="eyebrow">Hourly rates</p>
+            <h2>Job Cost Rates</h2>
           </div>
         </div>
 
-        <div className="labor-settings">
-          <div className="labor-setting-row">
-            <label className="toggle-row">
-              <input
-                checked={adminSettings.labor.hourly.enabled}
-                onChange={(event: any) => updateLabor("hourly", "enabled", event.target.checked)}
-                type="checkbox"
-              />
-              Enable hourly labor
-            </label>
-            <label>
-              Hourly rate
-              <input
-                min="0"
-                onChange={(event: any) => updateLabor("hourly", "rate", event.target.value)}
-                step="0.01"
-                type="number"
-                value={adminSettings.labor.hourly.rate}
-              />
-            </label>
-          </div>
-
-          <div className="labor-setting-row">
-            <label className="toggle-row">
-              <input
-                checked={adminSettings.labor.perSquareFoot.enabled}
-                onChange={(event: any) =>
-                  updateLabor("perSquareFoot", "enabled", event.target.checked)
-                }
-                type="checkbox"
-              />
-              Enable labor per square foot
-            </label>
-            <label>
-              Labor rate / sq ft
-              <input
-                min="0"
-                onChange={(event: any) => updateLabor("perSquareFoot", "rate", event.target.value)}
-                step="0.01"
-                type="number"
-                value={adminSettings.labor.perSquareFoot.rate}
-              />
-            </label>
-          </div>
-
-          <div className="labor-setting-row">
-            <label className="toggle-row">
-              <input
-                checked={adminSettings.labor.flatFee.enabled}
-                onChange={(event: any) => updateLabor("flatFee", "enabled", event.target.checked)}
-                type="checkbox"
-              />
-              Enable flat labor fee
-            </label>
-            <label>
-              Flat labor fee
-              <input
-                min="0"
-                onChange={(event: any) => updateLabor("flatFee", "fee", event.target.value)}
-                step="0.01"
-                type="number"
-                value={adminSettings.labor.flatFee.fee}
-              />
-            </label>
-          </div>
+        <div className="input-grid">
+          <label>
+            Labor hourly rate
+            <input
+              min="0"
+              onChange={(event: any) => updateJobCostRate("laborHourlyRate", event.target.value)}
+              step="0.01"
+              type="number"
+              value={adminSettings.jobCosts.laborHourlyRate}
+            />
+          </label>
+          <label>
+            Logistics hourly rate
+            <input
+              min="0"
+              onChange={(event: any) => updateJobCostRate("logisticsHourlyRate", event.target.value)}
+              step="0.01"
+              type="number"
+              value={adminSettings.jobCosts.logisticsHourlyRate}
+            />
+          </label>
+          <label>
+            Disposal hourly rate
+            <input
+              min="0"
+              onChange={(event: any) => updateJobCostRate("disposalHourlyRate", event.target.value)}
+              step="0.01"
+              type="number"
+              value={adminSettings.jobCosts.disposalHourlyRate}
+            />
+          </label>
         </div>
       </section>
     </div>
