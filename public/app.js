@@ -43,30 +43,11 @@ const fallbackSettings = {
     name: "1/16 over 1/16",
     pricePerSqFt: 1.75
   }],
-  addOns: [{
-    id: "logistics",
-    name: "Logistics",
-    cost: 85,
-    costType: "flat"
-  }, {
-    id: "disposal",
-    name: "Disposal",
-    cost: 12,
-    costType: "per_item"
-  }],
-  labor: {
-    hourly: {
-      enabled: true,
-      rate: 95
-    },
-    perSquareFoot: {
-      enabled: true,
-      rate: 4.5
-    },
-    flatFee: {
-      enabled: true,
-      fee: 175
-    }
+  addOns: [],
+  jobCosts: {
+    laborHourlyRate: 95,
+    logisticsHourlyRate: 85,
+    disposalHourlyRate: 65
   }
 };
 const currency = new Intl.NumberFormat("en-US", {
@@ -211,11 +192,10 @@ function App() {
   const [lineError, setLineError] = useState("");
   const [estimateLines, setEstimateLines] = useState([]);
   const [selectedAddOns, setSelectedAddOns] = useState([]);
-  const [laborSelection, setLaborSelection] = useState({
-    useHours: false,
-    hours: "",
-    useSquareFoot: false,
-    useFlatFee: false
+  const [jobCosts, setJobCosts] = useState({
+    laborHours: "",
+    logisticsHours: "",
+    disposalHours: ""
   });
   const [taxEnabled, setTaxEnabled] = useState(false);
   const [taxRate, setTaxRate] = useState("0");
@@ -355,22 +335,13 @@ function App() {
     const glassTotalWithMarkup = glassSubtotal * settings.markupMultiplier;
     const addOnTotals = settings.addOns.filter(addOn => selectedAddOns.includes(addOn.id)).map(addOn => calculateAddOn(addOn, totalSqFt, totalQuantity));
     const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
-    const hours = normalizeNumber(laborSelection.hours);
-    const laborRows = [laborSelection.useHours && settings.labor.hourly.enabled ? {
-      label: "Labor by hours",
-      basis: `${measurement(hours)} hrs x ${money(settings.labor.hourly.rate)}/hr`,
-      total: hours * settings.labor.hourly.rate
-    } : null, laborSelection.useSquareFoot && settings.labor.perSquareFoot.enabled ? {
-      label: "Labor by square footage",
-      basis: `${measurement(totalSqFt)} sq ft x ${money(settings.labor.perSquareFoot.rate)}/sq ft`,
-      total: totalSqFt * settings.labor.perSquareFoot.rate
-    } : null, laborSelection.useFlatFee && settings.labor.flatFee.enabled ? {
-      label: "Labor flat fee",
-      basis: "Flat labor fee",
-      total: settings.labor.flatFee.fee
-    } : null].filter(Boolean);
-    const laborTotal = laborRows.reduce((total, row) => total + row.total, 0);
-    const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal;
+    const laborHours = normalizeNumber(jobCosts.laborHours);
+    const logisticsHours = normalizeNumber(jobCosts.logisticsHours);
+    const disposalHours = normalizeNumber(jobCosts.disposalHours);
+    const laborTotal = laborHours * settings.jobCosts.laborHourlyRate;
+    const logisticsTotal = logisticsHours * settings.jobCosts.logisticsHourlyRate;
+    const disposalTotal = disposalHours * settings.jobCosts.disposalHourlyRate;
+    const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal;
     const taxAmount = taxEnabled ? preTaxTotal * (normalizeNumber(taxRate) / 100) : 0;
     const grandTotal = preTaxTotal + taxAmount;
     return {
@@ -381,13 +352,14 @@ function App() {
       glassTotalWithMarkup,
       addOnTotals,
       addOnsTotal,
-      laborRows,
       laborTotal,
+      logisticsTotal,
+      disposalTotal,
       preTaxTotal,
       taxAmount,
       grandTotal
     };
-  }, [estimateLines, laborSelection, selectedAddOns, settings, taxEnabled, taxRate]);
+  }, [estimateLines, jobCosts, selectedAddOns, settings, taxEnabled, taxRate]);
   function updateDraft(field, value) {
     setDraftLine(current => ({
       ...current,
@@ -448,7 +420,7 @@ function App() {
           customerName,
           lines: estimateLines,
           selectedAddOns,
-          laborSelection,
+          jobCosts,
           taxEnabled,
           taxRate
         })
@@ -514,16 +486,13 @@ function App() {
       addOns: current.addOns.filter(addOn => addOn.id !== id)
     }));
   }
-  function updateLabor(method, field, value) {
+  function updateJobCostRate(field, value) {
     setAdminStatus("idle");
     setAdminSettings(current => ({
       ...current,
-      labor: {
-        ...current.labor,
-        [method]: {
-          ...current.labor[method],
-          [field]: typeof value === "boolean" ? value : normalizeNumber(value)
-        }
+      jobCosts: {
+        ...current.jobCosts,
+        [field]: normalizeNumber(value)
       }
     }));
   }
@@ -556,12 +525,17 @@ function App() {
         name: spec.name.trim(),
         pricePerSqFt: normalizeNumber(spec.pricePerSqFt)
       })),
-      addOns: adminSettings.addOns.map((addOn, index) => ({
+      addOns: adminSettings.addOns.filter(addOn => !["logistics", "disposal"].includes(slugify(addOn.id || addOn.name, ""))).map((addOn, index) => ({
         ...addOn,
         id: slugify(addOn.id || addOn.name, `add-on-${index + 1}`),
         name: addOn.name.trim(),
         cost: normalizeNumber(addOn.cost)
-      }))
+      })),
+      jobCosts: {
+        laborHourlyRate: normalizeNumber(adminSettings.jobCosts.laborHourlyRate),
+        logisticsHourlyRate: normalizeNumber(adminSettings.jobCosts.logisticsHourlyRate),
+        disposalHourlyRate: normalizeNumber(adminSettings.jobCosts.disposalHourlyRate)
+      }
     };
     const validationError = validateAdmin(prepared);
     if (validationError) {
@@ -724,8 +698,8 @@ function App() {
     toggleDraftSpec: toggleDraftSpec,
     totals: totals,
     updateDraft: updateDraft,
-    laborSelection: laborSelection,
-    setLaborSelection: setLaborSelection,
+    jobCosts: jobCosts,
+    setJobCosts: setJobCosts,
     setTaxEnabled: setTaxEnabled,
     setTaxRate: setTaxRate
   }), activeView === "saved" && /*#__PURE__*/React.createElement(SavedEstimatesView, {
@@ -743,7 +717,7 @@ function App() {
     setAdminSettings: setAdminSettings,
     updateAdminAddOn: updateAdminAddOn,
     updateAdminGlassSpec: updateAdminGlassSpec,
-    updateLabor: updateLabor
+    updateJobCostRate: updateJobCostRate
   }), activeView === "team" && isAdmin && /*#__PURE__*/React.createElement(TeamAccessView, {
     createTeamMember: createTeamMember,
     deleteTeamMember: deleteTeamMember,
@@ -821,8 +795,8 @@ function EstimatorView(props) {
     toggleDraftSpec,
     totals,
     updateDraft,
-    laborSelection,
-    setLaborSelection,
+    jobCosts,
+    setJobCosts,
     setTaxEnabled,
     setTaxRate
   } = props;
@@ -914,9 +888,9 @@ function EstimatorView(props) {
     settings: settings,
     toggleAddOn: toggleAddOn,
     totals: totals
-  }), /*#__PURE__*/React.createElement(LaborSection, {
-    laborSelection: laborSelection,
-    setLaborSelection: setLaborSelection,
+  }), /*#__PURE__*/React.createElement(JobCostsSection, {
+    jobCosts: jobCosts,
+    setJobCosts: setJobCosts,
     settings: settings,
     totals: totals
   }), /*#__PURE__*/React.createElement(EstimateSummary, {
@@ -994,17 +968,14 @@ function AddOnsSection({
     className: "empty-state tight"
   }, "No add-ons are configured.")));
 }
-function LaborSection({
-  laborSelection,
-  setLaborSelection,
+function JobCostsSection({
+  jobCosts,
+  setJobCosts,
   settings,
   totals
 }) {
-  const hoursDisabled = !settings.labor.hourly.enabled;
-  const perSqFtDisabled = !settings.labor.perSquareFoot.enabled;
-  const flatDisabled = !settings.labor.flatFee.enabled;
-  function patchLabor(patch) {
-    setLaborSelection(current => ({
+  function patchJobCosts(patch) {
+    setJobCosts(current => ({
       ...current,
       ...patch
     }));
@@ -1015,47 +986,50 @@ function LaborSection({
     className: "section-heading compact"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
     className: "eyebrow"
-  }, "Install"), /*#__PURE__*/React.createElement("h2", null, "Labor Calculator"))), /*#__PURE__*/React.createElement("div", {
-    className: "checkbox-list"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: `check-option stacked ${hoursDisabled ? "disabled" : ""}`
-  }, /*#__PURE__*/React.createElement("input", {
-    checked: laborSelection.useHours,
-    disabled: hoursDisabled,
-    onChange: event => patchLabor({
-      useHours: event.target.checked
-    }),
-    type: "checkbox"
-  }), /*#__PURE__*/React.createElement("span", null, "Labor by hours", /*#__PURE__*/React.createElement("small", null, money(settings.labor.hourly.rate), " per hour"))), laborSelection.useHours && !hoursDisabled && /*#__PURE__*/React.createElement("label", {
-    className: "inline-input"
-  }, "Labor hours", /*#__PURE__*/React.createElement("input", {
+  }, "Hourly work"), /*#__PURE__*/React.createElement("h2", null, "Job Costs"))), /*#__PURE__*/React.createElement("div", {
+    className: "input-grid"
+  }, /*#__PURE__*/React.createElement("label", null, "Labor hours", /*#__PURE__*/React.createElement("input", {
     min: "0",
-    onChange: event => patchLabor({
-      hours: event.target.value
+    onChange: event => patchJobCosts({
+      laborHours: event.target.value
     }),
     placeholder: "0",
     step: "0.25",
     type: "number",
-    value: laborSelection.hours
-  })), /*#__PURE__*/React.createElement("label", {
-    className: `check-option stacked ${perSqFtDisabled ? "disabled" : ""}`
-  }, /*#__PURE__*/React.createElement("input", {
-    checked: laborSelection.useSquareFoot,
-    disabled: perSqFtDisabled,
-    onChange: event => patchLabor({
-      useSquareFoot: event.target.checked
+    value: jobCosts.laborHours
+  })), /*#__PURE__*/React.createElement("label", null, "Logistics hours", /*#__PURE__*/React.createElement("input", {
+    min: "0",
+    onChange: event => patchJobCosts({
+      logisticsHours: event.target.value
     }),
-    type: "checkbox"
-  }), /*#__PURE__*/React.createElement("span", null, "Labor by square footage", /*#__PURE__*/React.createElement("small", null, money(settings.labor.perSquareFoot.rate), " x ", measurement(totals.totalSqFt), " sq ft")), /*#__PURE__*/React.createElement("strong", null, money(totals.totalSqFt * settings.labor.perSquareFoot.rate))), /*#__PURE__*/React.createElement("label", {
-    className: `check-option stacked ${flatDisabled ? "disabled" : ""}`
-  }, /*#__PURE__*/React.createElement("input", {
-    checked: laborSelection.useFlatFee,
-    disabled: flatDisabled,
-    onChange: event => patchLabor({
-      useFlatFee: event.target.checked
+    placeholder: "0",
+    step: "0.25",
+    type: "number",
+    value: jobCosts.logisticsHours
+  })), /*#__PURE__*/React.createElement("label", null, "Disposal hours", /*#__PURE__*/React.createElement("input", {
+    min: "0",
+    onChange: event => patchJobCosts({
+      disposalHours: event.target.value
     }),
-    type: "checkbox"
-  }), /*#__PURE__*/React.createElement("span", null, "Labor flat fee", /*#__PURE__*/React.createElement("small", null, "Configured flat labor amount")), /*#__PURE__*/React.createElement("strong", null, money(settings.labor.flatFee.fee)))));
+    placeholder: "0",
+    step: "0.25",
+    type: "number",
+    value: jobCosts.disposalHours
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "summary-lines job-cost-preview"
+  }, /*#__PURE__*/React.createElement(SummaryRow, {
+    label: `Labor @ ${money(settings.jobCosts.laborHourlyRate)}/hr`,
+    value: money(totals.laborTotal),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: `Logistics @ ${money(settings.jobCosts.logisticsHourlyRate)}/hr`,
+    value: money(totals.logisticsTotal),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: `Disposal @ ${money(settings.jobCosts.disposalHourlyRate)}/hr`,
+    value: money(totals.disposalTotal),
+    small: true
+  })));
 }
 function EstimateSummary({
   settings,
@@ -1096,12 +1070,13 @@ function EstimateSummary({
   })), /*#__PURE__*/React.createElement(SummaryRow, {
     label: "Labor total",
     value: money(totals.laborTotal)
-  }), totals.laborRows.map(row => /*#__PURE__*/React.createElement(SummaryRow, {
-    key: row.label,
-    label: row.label,
-    value: money(row.total),
-    small: true
-  })), /*#__PURE__*/React.createElement(SummaryRow, {
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Logistics total",
+    value: money(totals.logisticsTotal)
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Disposal total",
+    value: money(totals.disposalTotal)
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
     label: "Estimate subtotal",
     value: money(totals.preTaxTotal),
     strong: true
@@ -1174,6 +1149,12 @@ function SavedEstimatesView({
     label: "Labor",
     value: money(estimate.totals.laborTotal)
   }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Logistics",
+    value: money(estimate.totals.logisticsTotal)
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Disposal",
+    value: money(estimate.totals.disposalTotal)
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
     label: "Grand total",
     value: money(estimate.totals.grandTotal),
     strong: true
@@ -1196,7 +1177,7 @@ function AdminView(props) {
     setAdminSettings,
     updateAdminAddOn,
     updateAdminGlassSpec,
-    updateLabor
+    updateJobCostRate
   } = props;
   return /*#__PURE__*/React.createElement("div", {
     className: "admin-layout"
@@ -1301,51 +1282,27 @@ function AdminView(props) {
     className: "section-heading compact"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
     className: "eyebrow"
-  }, "Labor"), /*#__PURE__*/React.createElement("h2", null, "Labor Pricing"))), /*#__PURE__*/React.createElement("div", {
-    className: "labor-settings"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "labor-setting-row"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "toggle-row"
-  }, /*#__PURE__*/React.createElement("input", {
-    checked: adminSettings.labor.hourly.enabled,
-    onChange: event => updateLabor("hourly", "enabled", event.target.checked),
-    type: "checkbox"
-  }), "Enable hourly labor"), /*#__PURE__*/React.createElement("label", null, "Hourly rate", /*#__PURE__*/React.createElement("input", {
+  }, "Hourly rates"), /*#__PURE__*/React.createElement("h2", null, "Job Cost Rates"))), /*#__PURE__*/React.createElement("div", {
+    className: "input-grid"
+  }, /*#__PURE__*/React.createElement("label", null, "Labor hourly rate", /*#__PURE__*/React.createElement("input", {
     min: "0",
-    onChange: event => updateLabor("hourly", "rate", event.target.value),
+    onChange: event => updateJobCostRate("laborHourlyRate", event.target.value),
     step: "0.01",
     type: "number",
-    value: adminSettings.labor.hourly.rate
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "labor-setting-row"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "toggle-row"
-  }, /*#__PURE__*/React.createElement("input", {
-    checked: adminSettings.labor.perSquareFoot.enabled,
-    onChange: event => updateLabor("perSquareFoot", "enabled", event.target.checked),
-    type: "checkbox"
-  }), "Enable labor per square foot"), /*#__PURE__*/React.createElement("label", null, "Labor rate / sq ft", /*#__PURE__*/React.createElement("input", {
+    value: adminSettings.jobCosts.laborHourlyRate
+  })), /*#__PURE__*/React.createElement("label", null, "Logistics hourly rate", /*#__PURE__*/React.createElement("input", {
     min: "0",
-    onChange: event => updateLabor("perSquareFoot", "rate", event.target.value),
+    onChange: event => updateJobCostRate("logisticsHourlyRate", event.target.value),
     step: "0.01",
     type: "number",
-    value: adminSettings.labor.perSquareFoot.rate
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "labor-setting-row"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "toggle-row"
-  }, /*#__PURE__*/React.createElement("input", {
-    checked: adminSettings.labor.flatFee.enabled,
-    onChange: event => updateLabor("flatFee", "enabled", event.target.checked),
-    type: "checkbox"
-  }), "Enable flat labor fee"), /*#__PURE__*/React.createElement("label", null, "Flat labor fee", /*#__PURE__*/React.createElement("input", {
+    value: adminSettings.jobCosts.logisticsHourlyRate
+  })), /*#__PURE__*/React.createElement("label", null, "Disposal hourly rate", /*#__PURE__*/React.createElement("input", {
     min: "0",
-    onChange: event => updateLabor("flatFee", "fee", event.target.value),
+    onChange: event => updateJobCostRate("disposalHourlyRate", event.target.value),
     step: "0.01",
     type: "number",
-    value: adminSettings.labor.flatFee.fee
-  }))))));
+    value: adminSettings.jobCosts.disposalHourlyRate
+  })))));
 }
 function TeamAccessView(props) {
   const {
