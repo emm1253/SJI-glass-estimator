@@ -41,14 +41,11 @@ const defaultSettings = {
     { id: "eighth-over-eighth", name: "1/8 over 1/8", pricePerSqFt: 2.5 },
     { id: "sixteenth-over-sixteenth", name: "1/16 over 1/16", pricePerSqFt: 1.75 }
   ],
-  addOns: [
-    { id: "logistics", name: "Logistics", cost: 85, costType: "flat" },
-    { id: "disposal", name: "Disposal", cost: 12, costType: "per_item" }
-  ],
-  labor: {
-    hourly: { enabled: true, rate: 95 },
-    perSquareFoot: { enabled: true, rate: 4.5 },
-    flatFee: { enabled: true, fee: 175 }
+  addOns: [],
+  jobCosts: {
+    laborHourlyRate: 95,
+    logisticsHourlyRate: 85,
+    disposalHourlyRate: 65
   }
 };
 
@@ -299,7 +296,8 @@ function normalizeSettings(input = {}) {
     ? input.glassSpecs
     : base.glassSpecs;
   const addOns = Array.isArray(input.addOns) ? input.addOns : base.addOns;
-  const labor = input.labor || {};
+  const legacyLabor = input.labor || {};
+  const jobCosts = input.jobCosts || {};
 
   return {
     markupMultiplier: numberOr(input.markupMultiplier, base.markupMultiplier, 0),
@@ -309,30 +307,27 @@ function normalizeSettings(input = {}) {
       name: String(spec.name || `Glass spec ${index + 1}`).trim(),
       pricePerSqFt: numberOr(spec.pricePerSqFt, 0, 0)
     })),
-    addOns: addOns.map((addOn, index) => {
-      const costType = ["flat", "per_sq_ft", "per_item"].includes(addOn.costType)
-        ? addOn.costType
-        : "flat";
-      return {
-        id: slugify(addOn.id || addOn.name, `add-on-${index + 1}`),
-        name: String(addOn.name || `Add-on ${index + 1}`).trim(),
-        cost: numberOr(addOn.cost, 0, 0),
-        costType
-      };
-    }),
-    labor: {
-      hourly: {
-        enabled: boolOr(labor.hourly?.enabled, base.labor.hourly.enabled),
-        rate: numberOr(labor.hourly?.rate, base.labor.hourly.rate, 0)
-      },
-      perSquareFoot: {
-        enabled: boolOr(labor.perSquareFoot?.enabled, base.labor.perSquareFoot.enabled),
-        rate: numberOr(labor.perSquareFoot?.rate, base.labor.perSquareFoot.rate, 0)
-      },
-      flatFee: {
-        enabled: boolOr(labor.flatFee?.enabled, base.labor.flatFee.enabled),
-        fee: numberOr(labor.flatFee?.fee, base.labor.flatFee.fee, 0)
-      }
+    addOns: addOns
+      .filter((addOn) => !["logistics", "disposal"].includes(slugify(addOn.id || addOn.name, "")))
+      .map((addOn, index) => {
+        const costType = ["flat", "per_sq_ft", "per_item"].includes(addOn.costType)
+          ? addOn.costType
+          : "flat";
+        return {
+          id: slugify(addOn.id || addOn.name, `add-on-${index + 1}`),
+          name: String(addOn.name || `Add-on ${index + 1}`).trim(),
+          cost: numberOr(addOn.cost, 0, 0),
+          costType
+        };
+      }),
+    jobCosts: {
+      laborHourlyRate: numberOr(
+        jobCosts.laborHourlyRate ?? legacyLabor.hourly?.rate,
+        base.jobCosts.laborHourlyRate,
+        0
+      ),
+      logisticsHourlyRate: numberOr(jobCosts.logisticsHourlyRate, base.jobCosts.logisticsHourlyRate, 0),
+      disposalHourlyRate: numberOr(jobCosts.disposalHourlyRate, base.jobCosts.disposalHourlyRate, 0)
     }
   };
 }
@@ -916,7 +911,11 @@ function calculateEstimate(payload, settings) {
   const selectedAddOns = Array.isArray(payload.selectedAddOns)
     ? payload.selectedAddOns.filter((addOnId) => validAddOnIds.has(addOnId))
     : [];
-  const laborSelection = payload.laborSelection || {};
+  const legacyLaborSelection = payload.laborSelection || {};
+  const jobCosts = payload.jobCosts || {};
+  const laborHours = numberOr(jobCosts.laborHours ?? legacyLaborSelection.hours, 0, 0);
+  const logisticsHours = numberOr(jobCosts.logisticsHours, 0, 0);
+  const disposalHours = numberOr(jobCosts.disposalHours, 0, 0);
   const lineCalculations = lines.map((line) => {
     const unitSqFt = squareFeet(line.width, line.height);
     const totalSqFt = unitSqFt * line.quantity;
@@ -931,17 +930,10 @@ function calculateEstimate(payload, settings) {
   const addOnsTotal = settings.addOns
     .filter((addOn) => selectedAddOns.includes(addOn.id))
     .reduce((total, addOn) => total + calculateAddOn(addOn, totalSqFt, totalQuantity), 0);
-  const laborTotal =
-    (laborSelection.useHours && settings.labor.hourly.enabled
-      ? numberOr(laborSelection.hours, 0, 0) * settings.labor.hourly.rate
-      : 0) +
-    (laborSelection.useSquareFoot && settings.labor.perSquareFoot.enabled
-      ? totalSqFt * settings.labor.perSquareFoot.rate
-      : 0) +
-    (laborSelection.useFlatFee && settings.labor.flatFee.enabled
-      ? settings.labor.flatFee.fee
-      : 0);
-  const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal;
+  const laborTotal = laborHours * settings.jobCosts.laborHourlyRate;
+  const logisticsTotal = logisticsHours * settings.jobCosts.logisticsHourlyRate;
+  const disposalTotal = disposalHours * settings.jobCosts.disposalHourlyRate;
+  const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal;
   const taxEnabled = Boolean(payload.taxEnabled);
   const taxRate = numberOr(payload.taxRate, settings.defaultTaxRate || 0, 0);
   const taxAmount = taxEnabled ? preTaxTotal * (taxRate / 100) : 0;
@@ -949,11 +941,10 @@ function calculateEstimate(payload, settings) {
   return {
     lines,
     selectedAddOns,
-    laborSelection: {
-      useHours: Boolean(laborSelection.useHours),
-      hours: String(laborSelection.hours || ""),
-      useSquareFoot: Boolean(laborSelection.useSquareFoot),
-      useFlatFee: Boolean(laborSelection.useFlatFee)
+    jobCosts: {
+      laborHours: String(laborHours || ""),
+      logisticsHours: String(logisticsHours || ""),
+      disposalHours: String(disposalHours || "")
     },
     taxEnabled,
     taxRate,
@@ -964,6 +955,8 @@ function calculateEstimate(payload, settings) {
       glassTotalWithMarkup,
       addOnsTotal,
       laborTotal,
+      logisticsTotal,
+      disposalTotal,
       preTaxTotal,
       taxAmount,
       grandTotal: preTaxTotal + taxAmount
