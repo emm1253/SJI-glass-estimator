@@ -533,6 +533,10 @@ tr:last-child td {
   gap: 9px;
 }
 
+.job-cost-preview {
+  margin-top: 14px;
+}
+
 .summary-row,
 .grand-total {
   display: flex;
