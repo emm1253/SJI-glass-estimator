@@ -1,0 +1,5 @@
+.env
+data/users.json
+data/sessions.json
+data/estimates.json
+data/*.backup.json
