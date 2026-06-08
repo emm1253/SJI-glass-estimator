@@ -45,7 +45,8 @@ const defaultSettings = {
   jobCosts: {
     laborHourlyRate: 95,
     logisticsHourlyRate: 85,
-    disposalHourlyRate: 65
+    disposalHourlyRate: 65,
+    scaffoldingHourlyRate: 0
   }
 };
 
@@ -308,7 +309,7 @@ function normalizeSettings(input = {}) {
       pricePerSqFt: numberOr(spec.pricePerSqFt, 0, 0)
     })),
     addOns: addOns
-      .filter((addOn) => !["logistics", "disposal"].includes(slugify(addOn.id || addOn.name, "")))
+      .filter((addOn) => !["logistics", "disposal", "scaffolding"].includes(slugify(addOn.id || addOn.name, "")))
       .map((addOn, index) => {
         const costType = ["flat", "per_sq_ft", "per_item"].includes(addOn.costType)
           ? addOn.costType
@@ -327,7 +328,8 @@ function normalizeSettings(input = {}) {
         0
       ),
       logisticsHourlyRate: numberOr(jobCosts.logisticsHourlyRate, base.jobCosts.logisticsHourlyRate, 0),
-      disposalHourlyRate: numberOr(jobCosts.disposalHourlyRate, base.jobCosts.disposalHourlyRate, 0)
+      disposalHourlyRate: numberOr(jobCosts.disposalHourlyRate, base.jobCosts.disposalHourlyRate, 0),
+      scaffoldingHourlyRate: numberOr(jobCosts.scaffoldingHourlyRate, base.jobCosts.scaffoldingHourlyRate, 0)
     }
   };
 }
@@ -881,10 +883,111 @@ function specPricePerSqFt(line, settings) {
   return settings.glassSpecs.reduce((total, spec) => selected.has(spec.id) ? total + spec.pricePerSqFt : total, 0);
 }
 
+function selectedSpecDetails(line, settings) {
+  const selected = new Set(line.specIds);
+  return settings.glassSpecs
+    .filter((spec) => selected.has(spec.id))
+    .map((spec) => ({
+      id: spec.id,
+      name: spec.name,
+      pricePerSqFt: spec.pricePerSqFt
+    }));
+}
+
 function calculateAddOn(addOn, totalSqFt, totalQuantity) {
-  if (addOn.costType === "per_sq_ft") return addOn.cost * totalSqFt;
-  if (addOn.costType === "per_item") return addOn.cost * totalQuantity;
-  return addOn.cost;
+  if (addOn.costType === "per_sq_ft") {
+    return {
+      addOn,
+      costType: addOn.costType,
+      cost: addOn.cost,
+      quantity: totalSqFt,
+      basis: `$${addOn.cost.toFixed(2)} x ${totalSqFt.toFixed(2)} sq ft`,
+      total: addOn.cost * totalSqFt
+    };
+  }
+
+  if (addOn.costType === "per_item") {
+    return {
+      addOn,
+      costType: addOn.costType,
+      cost: addOn.cost,
+      quantity: totalQuantity,
+      basis: `$${addOn.cost.toFixed(2)} x ${totalQuantity.toFixed(2)} items`,
+      total: addOn.cost * totalQuantity
+    };
+  }
+
+  return {
+    addOn,
+    costType: addOn.costType,
+    cost: addOn.cost,
+    quantity: 1,
+    basis: "Flat fee",
+    total: addOn.cost
+  };
+}
+
+function calculateLineBreakdown(line, settings) {
+  const unitSqFt = squareFeet(line.width, line.height);
+  const totalSqFt = unitSqFt * line.quantity;
+  const selectedSpecs = selectedSpecDetails(line, settings);
+  const rawGlassPricePerSqFt = specPricePerSqFt(line, settings);
+  const markupMultiplier = settings.markupMultiplier;
+  const glassPricePerSqFtAfterMarkup = rawGlassPricePerSqFt * markupMultiplier;
+  const rawGlassTotal = totalSqFt * rawGlassPricePerSqFt;
+  const glassTotalAfterMarkup = totalSqFt * glassPricePerSqFtAfterMarkup;
+  const selectedAddOns = new Set(Array.isArray(line.addOnIds) ? line.addOnIds : []);
+  const addOnTotals = settings.addOns
+    .filter((addOn) => selectedAddOns.has(addOn.id))
+    .map((addOn) => calculateAddOn(addOn, totalSqFt, line.quantity));
+  const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
+  const jobCosts = {
+    labor: {
+      hours: numberOr(line.laborHours, 0, 0),
+      rate: settings.jobCosts.laborHourlyRate,
+      total: numberOr(line.laborHours, 0, 0) * settings.jobCosts.laborHourlyRate
+    },
+    logistics: {
+      hours: numberOr(line.logisticsHours, 0, 0),
+      rate: settings.jobCosts.logisticsHourlyRate,
+      total: numberOr(line.logisticsHours, 0, 0) * settings.jobCosts.logisticsHourlyRate
+    },
+    disposal: {
+      hours: numberOr(line.disposalHours, 0, 0),
+      rate: settings.jobCosts.disposalHourlyRate,
+      total: numberOr(line.disposalHours, 0, 0) * settings.jobCosts.disposalHourlyRate
+    },
+    scaffolding: {
+      hours: numberOr(line.scaffoldingHours, 0, 0),
+      rate: settings.jobCosts.scaffoldingHourlyRate,
+      total: numberOr(line.scaffoldingHours, 0, 0) * settings.jobCosts.scaffoldingHourlyRate
+    }
+  };
+  const lineJobCostsTotal =
+    jobCosts.labor.total +
+    jobCosts.logistics.total +
+    jobCosts.disposal.total +
+    jobCosts.scaffolding.total;
+  const lineItemTotal = glassTotalAfterMarkup + lineJobCostsTotal + addOnsTotal;
+
+  return {
+    line,
+    unitSqFt,
+    totalSqFt,
+    selectedSpecs,
+    rawGlassPricePerSqFt,
+    pricePerSqFt: rawGlassPricePerSqFt,
+    markupMultiplier,
+    glassPricePerSqFtAfterMarkup,
+    rawGlassTotal,
+    subtotal: rawGlassTotal,
+    glassTotalAfterMarkup,
+    addOnTotals,
+    addOnsTotal,
+    jobCosts,
+    lineJobCostsTotal,
+    lineItemTotal
+  };
 }
 
 function calculateEstimate(payload, settings) {
@@ -898,7 +1001,14 @@ function calculateEstimate(payload, settings) {
         quantity: numberOr(line.quantity, 0, 0),
         specIds: Array.isArray(line.specIds)
           ? line.specIds.filter((specId) => validSpecIds.has(specId))
-          : []
+          : [],
+        addOnIds: Array.isArray(line.addOnIds)
+          ? line.addOnIds.filter((addOnId) => validAddOnIds.has(addOnId))
+          : [],
+        laborHours: numberOr(line.laborHours, 0, 0),
+        logisticsHours: numberOr(line.logisticsHours, 0, 0),
+        disposalHours: numberOr(line.disposalHours, 0, 0),
+        scaffoldingHours: numberOr(line.scaffoldingHours, 0, 0)
       })).filter((line) => line.width > 0 && line.height > 0 && line.quantity > 0)
     : [];
 
@@ -908,44 +1018,25 @@ function calculateEstimate(payload, settings) {
     throw error;
   }
 
-  const selectedAddOns = Array.isArray(payload.selectedAddOns)
-    ? payload.selectedAddOns.filter((addOnId) => validAddOnIds.has(addOnId))
-    : [];
-  const legacyLaborSelection = payload.laborSelection || {};
-  const jobCosts = payload.jobCosts || {};
-  const laborHours = numberOr(jobCosts.laborHours ?? legacyLaborSelection.hours, 0, 0);
-  const logisticsHours = numberOr(jobCosts.logisticsHours, 0, 0);
-  const disposalHours = numberOr(jobCosts.disposalHours, 0, 0);
-  const lineCalculations = lines.map((line) => {
-    const unitSqFt = squareFeet(line.width, line.height);
-    const totalSqFt = unitSqFt * line.quantity;
-    const pricePerSqFt = specPricePerSqFt(line, settings);
-    const subtotal = totalSqFt * pricePerSqFt;
-    return { line, unitSqFt, totalSqFt, pricePerSqFt, subtotal };
-  });
+  const lineCalculations = lines.map((line) => calculateLineBreakdown(line, settings));
   const totalSqFt = lineCalculations.reduce((total, line) => total + line.totalSqFt, 0);
   const totalQuantity = lines.reduce((total, line) => total + line.quantity, 0);
   const glassSubtotal = lineCalculations.reduce((total, line) => total + line.subtotal, 0);
-  const glassTotalWithMarkup = glassSubtotal * settings.markupMultiplier;
-  const addOnsTotal = settings.addOns
-    .filter((addOn) => selectedAddOns.includes(addOn.id))
-    .reduce((total, addOn) => total + calculateAddOn(addOn, totalSqFt, totalQuantity), 0);
-  const laborTotal = laborHours * settings.jobCosts.laborHourlyRate;
-  const logisticsTotal = logisticsHours * settings.jobCosts.logisticsHourlyRate;
-  const disposalTotal = disposalHours * settings.jobCosts.disposalHourlyRate;
-  const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal;
+  const glassTotalWithMarkup = lineCalculations.reduce((total, line) => total + line.glassTotalAfterMarkup, 0);
+  const addOnsTotal = lineCalculations.reduce((total, line) => total + line.addOnsTotal, 0);
+  const laborTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.labor.total, 0);
+  const logisticsTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.logistics.total, 0);
+  const disposalTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.disposal.total, 0);
+  const scaffoldingTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.scaffolding.total, 0);
+  const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal + scaffoldingTotal;
   const taxEnabled = Boolean(payload.taxEnabled);
   const taxRate = numberOr(payload.taxRate, settings.defaultTaxRate || 0, 0);
   const taxAmount = taxEnabled ? preTaxTotal * (taxRate / 100) : 0;
 
   return {
     lines,
-    selectedAddOns,
-    jobCosts: {
-      laborHours: String(laborHours || ""),
-      logisticsHours: String(logisticsHours || ""),
-      disposalHours: String(disposalHours || "")
-    },
+    lineCalculations,
+    selectedAddOns: [],
     taxEnabled,
     taxRate,
     totals: {
@@ -957,6 +1048,7 @@ function calculateEstimate(payload, settings) {
       laborTotal,
       logisticsTotal,
       disposalTotal,
+      scaffoldingTotal,
       preTaxTotal,
       taxAmount,
       grandTotal: preTaxTotal + taxAmount
