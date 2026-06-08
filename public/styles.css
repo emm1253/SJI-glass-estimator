@@ -467,6 +467,14 @@ select:focus {
   margin-top: 26px;
 }
 
+.embedded-estimate-section {
+  margin-top: 18px;
+  border: 1px solid #dce8ec;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfdfd;
+}
+
 .line-card-stack {
   display: grid;
   gap: 14px;
@@ -797,6 +805,13 @@ tr:last-child td {
   border-radius: 8px;
   padding: 12px;
   background: #fff;
+}
+
+.saved-total-block h4 {
+  margin: 0 0 8px;
+  color: #273942;
+  font-size: 0.84rem;
+  text-transform: uppercase;
 }
 
 .status-message {

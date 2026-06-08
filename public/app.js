@@ -150,17 +150,10 @@ function calculateLine(line, settings) {
   const glassPricePerSqFtAfterMarkup = rawGlassPricePerSqFt * markupMultiplier;
   const rawGlassTotal = totalSqFt * rawGlassPricePerSqFt;
   const glassTotalAfterMarkup = totalSqFt * glassPricePerSqFtAfterMarkup;
-  const addOnIds = Array.isArray(line.addOnIds) ? line.addOnIds : [];
-  const addOnTotals = settings.addOns.filter(addOn => addOnIds.includes(addOn.id)).map(addOn => calculateAddOn(addOn, totalSqFt, line.quantity));
-  const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
   const jobCostRates = settings.jobCosts || fallbackSettings.jobCosts;
   const laborRate = normalizeNumber(jobCostRates.laborHourlyRate ?? 0);
-  const logisticsRate = normalizeNumber(jobCostRates.logisticsHourlyRate ?? 0);
-  const disposalRate = normalizeNumber(jobCostRates.disposalHourlyRate ?? 0);
   const scaffoldingRate = normalizeNumber(jobCostRates.scaffoldingHourlyRate ?? 0);
   const laborHours = normalizeNumber(line.laborHours ?? 0);
-  const logisticsHours = normalizeNumber(line.logisticsHours ?? 0);
-  const disposalHours = normalizeNumber(line.disposalHours ?? 0);
   const scaffoldingHours = normalizeNumber(line.scaffoldingHours ?? 0);
   const jobCosts = {
     labor: {
@@ -168,24 +161,14 @@ function calculateLine(line, settings) {
       rate: laborRate,
       total: laborHours * laborRate
     },
-    logistics: {
-      hours: logisticsHours,
-      rate: logisticsRate,
-      total: logisticsHours * logisticsRate
-    },
-    disposal: {
-      hours: disposalHours,
-      rate: disposalRate,
-      total: disposalHours * disposalRate
-    },
     scaffolding: {
       hours: scaffoldingHours,
       rate: scaffoldingRate,
       total: scaffoldingHours * scaffoldingRate
     }
   };
-  const lineJobCostsTotal = jobCosts.labor.total + jobCosts.logistics.total + jobCosts.disposal.total + jobCosts.scaffolding.total;
-  const lineItemTotal = glassTotalAfterMarkup + lineJobCostsTotal + addOnsTotal;
+  const lineJobCostsTotal = jobCosts.labor.total + jobCosts.scaffolding.total;
+  const lineItemTotal = glassTotalAfterMarkup + lineJobCostsTotal;
   return {
     unitSqFt,
     totalSqFt,
@@ -197,8 +180,8 @@ function calculateLine(line, settings) {
     rawGlassTotal,
     subtotal: rawGlassTotal,
     glassTotalAfterMarkup,
-    addOnTotals,
-    addOnsTotal,
+    addOnTotals: [],
+    addOnsTotal: 0,
     jobCosts,
     lineJobCostsTotal,
     lineItemTotal
@@ -250,14 +233,16 @@ function App() {
     height: "",
     quantity: "1",
     specIds: ["clear"],
-    addOnIds: [],
     laborHours: "",
-    logisticsHours: "",
-    disposalHours: "",
     scaffoldingHours: ""
   });
   const [lineError, setLineError] = useState("");
   const [estimateLines, setEstimateLines] = useState([]);
+  const [selectedAddOns, setSelectedAddOns] = useState([]);
+  const [jobCosts, setJobCosts] = useState({
+    logisticsHours: "",
+    disposalHours: ""
+  });
   const [taxEnabled, setTaxEnabled] = useState(false);
   const [taxRate, setTaxRate] = useState("0");
   const [loginEmail, setLoginEmail] = useState("");
@@ -382,6 +367,7 @@ function App() {
     setUsers([]);
     setEstimates([]);
     setEstimateLines([]);
+    setSelectedAddOns([]);
     setActiveView("estimate");
   }
   const totals = useMemo(() => {
@@ -393,12 +379,14 @@ function App() {
     const totalQuantity = estimateLines.reduce((total, line) => total + line.quantity, 0);
     const glassSubtotal = lineCalculations.reduce((total, line) => total + line.subtotal, 0);
     const glassTotalWithMarkup = lineCalculations.reduce((total, line) => total + line.glassTotalAfterMarkup, 0);
-    const addOnTotals = lineCalculations.flatMap(line => line.addOnTotals);
-    const addOnsTotal = lineCalculations.reduce((total, line) => total + line.addOnsTotal, 0);
+    const addOnTotals = settings.addOns.filter(addOn => selectedAddOns.includes(addOn.id)).map(addOn => calculateAddOn(addOn, totalSqFt, totalQuantity));
+    const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
     const laborTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.labor.total, 0);
-    const logisticsTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.logistics.total, 0);
-    const disposalTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.disposal.total, 0);
     const scaffoldingTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.scaffolding.total, 0);
+    const logisticsHours = normalizeNumber(jobCosts.logisticsHours);
+    const disposalHours = normalizeNumber(jobCosts.disposalHours);
+    const logisticsTotal = logisticsHours * normalizeNumber(settings.jobCosts.logisticsHourlyRate ?? 0);
+    const disposalTotal = disposalHours * normalizeNumber(settings.jobCosts.disposalHourlyRate ?? 0);
     const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal + scaffoldingTotal;
     const taxAmount = taxEnabled ? preTaxTotal * (normalizeNumber(taxRate) / 100) : 0;
     const grandTotal = preTaxTotal + taxAmount;
@@ -418,7 +406,7 @@ function App() {
       taxAmount,
       grandTotal
     };
-  }, [estimateLines, settings, taxEnabled, taxRate]);
+  }, [estimateLines, jobCosts, selectedAddOns, settings, taxEnabled, taxRate]);
   function updateDraft(field, value) {
     setDraftLine(current => ({
       ...current,
@@ -435,14 +423,8 @@ function App() {
       };
     });
   }
-  function toggleDraftAddOn(addOnId) {
-    setDraftLine(current => {
-      const addOnIds = current.addOnIds.includes(addOnId) ? current.addOnIds.filter(id => id !== addOnId) : [...current.addOnIds, addOnId];
-      return {
-        ...current,
-        addOnIds
-      };
-    });
+  function toggleAddOn(addOnId) {
+    setSelectedAddOns(current => current.includes(addOnId) ? current.filter(id => id !== addOnId) : [...current, addOnId]);
   }
   function addLine() {
     const width = parseFractionalInches(draftLine.width);
@@ -458,10 +440,7 @@ function App() {
       height,
       quantity,
       specIds: draftLine.specIds,
-      addOnIds: draftLine.addOnIds,
       laborHours: normalizeNumber(draftLine.laborHours),
-      logisticsHours: normalizeNumber(draftLine.logisticsHours),
-      disposalHours: normalizeNumber(draftLine.disposalHours),
       scaffoldingHours: normalizeNumber(draftLine.scaffoldingHours)
     }]);
     setDraftLine({
@@ -469,10 +448,7 @@ function App() {
       height: "",
       quantity: "1",
       specIds: ["clear"],
-      addOnIds: [],
       laborHours: "",
-      logisticsHours: "",
-      disposalHours: "",
       scaffoldingHours: ""
     });
     setLineError("");
@@ -494,6 +470,8 @@ function App() {
           name: estimateName || "Glass estimate",
           customerName,
           lines: estimateLines,
+          selectedAddOns,
+          jobCosts,
           taxEnabled,
           taxRate
         })
@@ -762,15 +740,18 @@ function App() {
     saveError: saveError,
     saveEstimate: saveEstimate,
     saveMessage: saveMessage,
+    selectedAddOns: selectedAddOns,
     setCustomerName: setCustomerName,
     setEstimateName: setEstimateName,
     settings: settings,
     taxEnabled: taxEnabled,
     taxRate: taxRate,
-    toggleDraftAddOn: toggleDraftAddOn,
+    toggleAddOn: toggleAddOn,
     toggleDraftSpec: toggleDraftSpec,
     totals: totals,
     updateDraft: updateDraft,
+    jobCosts: jobCosts,
+    setJobCosts: setJobCosts,
     setTaxEnabled: setTaxEnabled,
     setTaxRate: setTaxRate
   }), activeView === "saved" && /*#__PURE__*/React.createElement(SavedEstimatesView, {
@@ -857,15 +838,18 @@ function EstimatorView(props) {
     saveError,
     saveEstimate,
     saveMessage,
+    selectedAddOns,
     setCustomerName,
     setEstimateName,
     settings,
     taxEnabled,
     taxRate,
-    toggleDraftAddOn,
+    toggleAddOn,
     toggleDraftSpec,
     totals,
     updateDraft,
+    jobCosts,
+    setJobCosts,
     setTaxEnabled,
     setTaxRate
   } = props;
@@ -918,7 +902,7 @@ function EstimatorView(props) {
   }, /*#__PURE__*/React.createElement("div", {
     className: "section-label"
   }, "Line job costs"), /*#__PURE__*/React.createElement("div", {
-    className: "input-grid four"
+    className: "input-grid two"
   }, /*#__PURE__*/React.createElement("label", null, "Labor hours", /*#__PURE__*/React.createElement("input", {
     min: "0",
     onChange: event => updateDraft("laborHours", event.target.value),
@@ -926,20 +910,6 @@ function EstimatorView(props) {
     step: "0.25",
     type: "number",
     value: draftLine.laborHours
-  })), /*#__PURE__*/React.createElement("label", null, "Logistics hours", /*#__PURE__*/React.createElement("input", {
-    min: "0",
-    onChange: event => updateDraft("logisticsHours", event.target.value),
-    placeholder: "0",
-    step: "0.25",
-    type: "number",
-    value: draftLine.logisticsHours
-  })), /*#__PURE__*/React.createElement("label", null, "Disposal hours", /*#__PURE__*/React.createElement("input", {
-    min: "0",
-    onChange: event => updateDraft("disposalHours", event.target.value),
-    placeholder: "0",
-    step: "0.25",
-    type: "number",
-    value: draftLine.disposalHours
   })), /*#__PURE__*/React.createElement("label", null, "Scaffolding hours", /*#__PURE__*/React.createElement("input", {
     min: "0",
     onChange: event => updateDraft("scaffoldingHours", event.target.value),
@@ -947,22 +917,7 @@ function EstimatorView(props) {
     step: "0.25",
     type: "number",
     value: draftLine.scaffoldingHours
-  })))), /*#__PURE__*/React.createElement("div", {
-    className: "checkbox-section"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "section-label"
-  }, "Line add-ons"), /*#__PURE__*/React.createElement("div", {
-    className: "checkbox-grid"
-  }, settings.addOns.length ? settings.addOns.map(addOn => /*#__PURE__*/React.createElement("label", {
-    className: "check-option stacked",
-    key: addOn.id
-  }, /*#__PURE__*/React.createElement("input", {
-    checked: draftLine.addOnIds.includes(addOn.id),
-    onChange: () => toggleDraftAddOn(addOn.id),
-    type: "checkbox"
-  }), /*#__PURE__*/React.createElement("span", null, addOn.name, /*#__PURE__*/React.createElement("small", null, costTypeLabels[addOn.costType], " - ", money(addOn.cost))))) : /*#__PURE__*/React.createElement("div", {
-    className: "empty-state tight"
-  }, "No add-ons are configured."))), lineError && /*#__PURE__*/React.createElement("p", {
+  })))), lineError && /*#__PURE__*/React.createElement("p", {
     className: "field-error"
   }, lineError), /*#__PURE__*/React.createElement("button", {
     className: "primary-button",
@@ -972,6 +927,16 @@ function EstimatorView(props) {
     estimateLines: estimateLines,
     removeLine: removeLine,
     settings: settings,
+    totals: totals
+  }), /*#__PURE__*/React.createElement(JobLevelCostsSection, {
+    jobCosts: jobCosts,
+    setJobCosts: setJobCosts,
+    settings: settings,
+    totals: totals
+  }), /*#__PURE__*/React.createElement(EstimateAddOnsSection, {
+    selectedAddOns: selectedAddOns,
+    settings: settings,
+    toggleAddOn: toggleAddOn,
     totals: totals
   })), /*#__PURE__*/React.createElement("aside", {
     className: "summary-column"
@@ -1094,12 +1059,6 @@ function EstimateLines({
     label: "Labor",
     item: item.jobCosts.labor
   }), /*#__PURE__*/React.createElement(JobCostRow, {
-    label: "Logistics",
-    item: item.jobCosts.logistics
-  }), /*#__PURE__*/React.createElement(JobCostRow, {
-    label: "Disposal",
-    item: item.jobCosts.disposal
-  }), /*#__PURE__*/React.createElement(JobCostRow, {
     label: "Scaffolding",
     item: item.jobCosts.scaffolding
   }), /*#__PURE__*/React.createElement(SummaryRow, {
@@ -1108,20 +1067,103 @@ function EstimateLines({
     small: true
   })), /*#__PURE__*/React.createElement("div", {
     className: "breakdown-block"
-  }, /*#__PURE__*/React.createElement("h4", null, "Add-ons"), item.addOnTotals.length ? item.addOnTotals.map(entry => /*#__PURE__*/React.createElement(SummaryRow, {
-    key: entry.addOn.id,
-    label: `${entry.addOn.name} (${costTypeLabels[entry.addOn.costType]})`,
-    value: money(entry.total),
+  }, /*#__PURE__*/React.createElement("h4", null, "Line total"), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Glass after markup",
+    value: money(item.glassTotalAfterMarkup),
     small: true
-  })) : /*#__PURE__*/React.createElement("p", {
-    className: "muted tight-copy"
-  }, "No add-ons assigned to this line."), /*#__PURE__*/React.createElement(SummaryRow, {
-    label: "Line add-ons",
-    value: money(item.addOnsTotal),
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Labor",
+    value: money(item.jobCosts.labor.total),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Scaffolding",
+    value: money(item.jobCosts.scaffolding.total),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Final line total",
+    value: money(item.lineItemTotal),
     small: true
   }))), /*#__PURE__*/React.createElement("div", {
     className: "line-final-total"
   }, /*#__PURE__*/React.createElement("span", null, "Final line item total"), /*#__PURE__*/React.createElement("strong", null, money(item.lineItemTotal)))))));
+}
+function JobLevelCostsSection({
+  jobCosts,
+  setJobCosts,
+  settings,
+  totals
+}) {
+  function patchJobCosts(patch) {
+    setJobCosts(current => ({
+      ...current,
+      ...patch
+    }));
+  }
+  return /*#__PURE__*/React.createElement("section", {
+    className: "embedded-estimate-section"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "section-heading compact"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    className: "eyebrow"
+  }, "Job level"), /*#__PURE__*/React.createElement("h2", null, "Job Costs"))), /*#__PURE__*/React.createElement("div", {
+    className: "input-grid two"
+  }, /*#__PURE__*/React.createElement("label", null, "Logistics hours", /*#__PURE__*/React.createElement("input", {
+    min: "0",
+    onChange: event => patchJobCosts({
+      logisticsHours: event.target.value
+    }),
+    placeholder: "0",
+    step: "0.25",
+    type: "number",
+    value: jobCosts.logisticsHours
+  })), /*#__PURE__*/React.createElement("label", null, "Disposal hours", /*#__PURE__*/React.createElement("input", {
+    min: "0",
+    onChange: event => patchJobCosts({
+      disposalHours: event.target.value
+    }),
+    placeholder: "0",
+    step: "0.25",
+    type: "number",
+    value: jobCosts.disposalHours
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "summary-lines job-cost-preview"
+  }, /*#__PURE__*/React.createElement(SummaryRow, {
+    label: `Logistics @ ${money(settings.jobCosts.logisticsHourlyRate)}/hr`,
+    value: money(totals.logisticsTotal),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: `Disposal @ ${money(settings.jobCosts.disposalHourlyRate)}/hr`,
+    value: money(totals.disposalTotal),
+    small: true
+  })));
+}
+function EstimateAddOnsSection({
+  selectedAddOns,
+  settings,
+  toggleAddOn,
+  totals
+}) {
+  return /*#__PURE__*/React.createElement("section", {
+    className: "embedded-estimate-section"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "section-heading compact"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+    className: "eyebrow"
+  }, "Estimate level"), /*#__PURE__*/React.createElement("h2", null, "Add-ons"))), /*#__PURE__*/React.createElement("div", {
+    className: "checkbox-list"
+  }, settings.addOns.length ? settings.addOns.map(addOn => {
+    const calculated = calculateAddOn(addOn, totals.totalSqFt, totals.totalQuantity);
+    return /*#__PURE__*/React.createElement("label", {
+      className: "check-option stacked",
+      key: addOn.id
+    }, /*#__PURE__*/React.createElement("input", {
+      checked: selectedAddOns.includes(addOn.id),
+      onChange: () => toggleAddOn(addOn.id),
+      type: "checkbox"
+    }), /*#__PURE__*/React.createElement("span", null, addOn.name, /*#__PURE__*/React.createElement("small", null, costTypeLabels[addOn.costType], " - ", calculated.basis)), /*#__PURE__*/React.createElement("strong", null, money(calculated.total)));
+  }) : /*#__PURE__*/React.createElement("div", {
+    className: "empty-state tight"
+  }, "No add-ons are configured.")));
 }
 function JobCostRow({
   label,
@@ -1222,19 +1264,48 @@ function normalizeBreakdownJobCosts(item) {
       ...empty,
       ...(jobCosts.labor || {})
     },
-    logistics: {
-      ...empty,
-      ...(jobCosts.logistics || {})
-    },
-    disposal: {
-      ...empty,
-      ...(jobCosts.disposal || {})
-    },
     scaffolding: {
       ...empty,
       ...(jobCosts.scaffolding || {})
     }
   };
+}
+function savedEstimateJobCosts(estimate, settings) {
+  const savedSettings = estimate.pricingSnapshot || settings;
+  const rates = savedSettings.jobCosts || fallbackSettings.jobCosts;
+  const savedBreakdowns = Array.isArray(estimate.lineCalculations) ? estimate.lineCalculations : [];
+  const jobCosts = estimate.jobCosts || {};
+  const legacyLogisticsHours = savedBreakdowns.reduce((total, item) => total + normalizeNumber(item.jobCosts?.logistics?.hours ?? 0), 0);
+  const legacyDisposalHours = savedBreakdowns.reduce((total, item) => total + normalizeNumber(item.jobCosts?.disposal?.hours ?? 0), 0);
+  const logisticsRate = normalizeNumber(rates.logisticsHourlyRate ?? 0);
+  const disposalRate = normalizeNumber(rates.disposalHourlyRate ?? 0);
+  const logisticsTotal = normalizeNumber(estimate.totals?.logisticsTotal ?? 0);
+  const disposalTotal = normalizeNumber(estimate.totals?.disposalTotal ?? 0);
+  const logisticsHours = normalizeNumber(jobCosts.logisticsHours ?? 0) || legacyLogisticsHours || (logisticsRate > 0 ? logisticsTotal / logisticsRate : 0);
+  const disposalHours = normalizeNumber(jobCosts.disposalHours ?? 0) || legacyDisposalHours || (disposalRate > 0 ? disposalTotal / disposalRate : 0);
+  return {
+    logistics: {
+      hours: logisticsHours,
+      rate: logisticsRate,
+      total: logisticsTotal || logisticsHours * logisticsRate
+    },
+    disposal: {
+      hours: disposalHours,
+      rate: disposalRate,
+      total: disposalTotal || disposalHours * disposalRate
+    }
+  };
+}
+function savedEstimateAddOns(estimate, settings) {
+  if (Array.isArray(estimate.addOnTotals)) return estimate.addOnTotals;
+  const savedBreakdowns = Array.isArray(estimate.lineCalculations) ? estimate.lineCalculations : [];
+  const legacyLineAddOns = savedBreakdowns.flatMap(item => Array.isArray(item.addOnTotals) ? item.addOnTotals : []);
+  if (legacyLineAddOns.length) return legacyLineAddOns;
+  const savedSettings = estimate.pricingSnapshot || settings;
+  if (Array.isArray(estimate.selectedAddOns) && estimate.selectedAddOns.length) {
+    return savedSettings.addOns.filter(addOn => estimate.selectedAddOns?.includes(addOn.id)).map(addOn => calculateAddOn(addOn, estimate.totals.totalSqFt, estimate.totals.totalQuantity));
+  }
+  return [];
 }
 function savedLineBreakdowns(estimate, settings) {
   const savedSettings = estimate.pricingSnapshot || settings;
@@ -1247,21 +1318,19 @@ function savedLineBreakdowns(estimate, settings) {
       ...fallback,
       ...saved
     });
-    const lineJobCostsTotal = jobCosts.labor.total + jobCosts.logistics.total + jobCosts.disposal.total + jobCosts.scaffolding.total;
-    const addOnTotals = Array.isArray(saved.addOnTotals) ? saved.addOnTotals : fallback.addOnTotals;
-    const addOnsTotal = Number.isFinite(saved.addOnsTotal) ? saved.addOnsTotal : fallback.addOnsTotal;
+    const lineJobCostsTotal = jobCosts.labor.total + jobCosts.scaffolding.total;
     const glassTotalAfterMarkup = Number.isFinite(saved.glassTotalAfterMarkup) ? saved.glassTotalAfterMarkup : fallback.glassTotalAfterMarkup;
     return {
       ...fallback,
       ...saved,
       line,
       selectedSpecs: Array.isArray(saved.selectedSpecs) ? saved.selectedSpecs : fallback.selectedSpecs,
-      addOnTotals,
-      addOnsTotal,
+      addOnTotals: [],
+      addOnsTotal: 0,
       jobCosts,
       lineJobCostsTotal,
       glassTotalAfterMarkup,
-      lineItemTotal: Number.isFinite(saved.lineItemTotal) ? saved.lineItemTotal : glassTotalAfterMarkup + lineJobCostsTotal + addOnsTotal
+      lineItemTotal: glassTotalAfterMarkup + lineJobCostsTotal
     };
   });
 }
@@ -1270,6 +1339,8 @@ function SavedEstimateBreakdown({
   settings
 }) {
   const lines = savedLineBreakdowns(estimate, settings);
+  const savedJobCosts = savedEstimateJobCosts(estimate, settings);
+  const savedAddOns = savedEstimateAddOns(estimate, settings);
   return /*#__PURE__*/React.createElement("details", {
     className: "saved-breakdown"
   }, /*#__PURE__*/React.createElement("summary", null, "View Full Breakdown"), !lines.length ? /*#__PURE__*/React.createElement("div", {
@@ -1326,12 +1397,6 @@ function SavedEstimateBreakdown({
     label: "Labor",
     item: item.jobCosts.labor
   }), /*#__PURE__*/React.createElement(JobCostRow, {
-    label: "Logistics",
-    item: item.jobCosts.logistics
-  }), /*#__PURE__*/React.createElement(JobCostRow, {
-    label: "Disposal",
-    item: item.jobCosts.disposal
-  }), /*#__PURE__*/React.createElement(JobCostRow, {
     label: "Scaffolding",
     item: item.jobCosts.scaffolding
   }), /*#__PURE__*/React.createElement(SummaryRow, {
@@ -1340,18 +1405,40 @@ function SavedEstimateBreakdown({
     small: true
   })), /*#__PURE__*/React.createElement("div", {
     className: "breakdown-block"
-  }, /*#__PURE__*/React.createElement("h4", null, "Add-ons"), item.addOnTotals.length ? item.addOnTotals.map(entry => /*#__PURE__*/React.createElement(SummaryRow, {
-    key: entry.addOn.id,
+  }, /*#__PURE__*/React.createElement("h4", null, "Line total"), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Glass after markup",
+    value: money(item.glassTotalAfterMarkup),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Labor",
+    value: money(item.jobCosts.labor.total),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Scaffolding",
+    value: money(item.jobCosts.scaffolding.total),
+    small: true
+  }), /*#__PURE__*/React.createElement(SummaryRow, {
+    label: "Final line total",
+    value: money(item.lineItemTotal),
+    small: true
+  })))))), /*#__PURE__*/React.createElement("div", {
+    className: "summary-lines saved-total-block"
+  }, /*#__PURE__*/React.createElement("h4", null, "Job Costs"), /*#__PURE__*/React.createElement(JobCostRow, {
+    label: "Logistics",
+    item: savedJobCosts.logistics
+  }), /*#__PURE__*/React.createElement(JobCostRow, {
+    label: "Disposal",
+    item: savedJobCosts.disposal
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "summary-lines saved-total-block"
+  }, /*#__PURE__*/React.createElement("h4", null, "Estimate Add-ons"), savedAddOns.length ? savedAddOns.map((entry, index) => /*#__PURE__*/React.createElement(SummaryRow, {
+    key: `${entry.addOn.id}-${index}`,
     label: `${entry.addOn.name} (${costTypeLabels[entry.addOn.costType]})`,
     value: money(entry.total),
     small: true
   })) : /*#__PURE__*/React.createElement("p", {
     className: "muted tight-copy"
-  }, "No add-ons assigned to this line."), /*#__PURE__*/React.createElement(SummaryRow, {
-    label: "Line add-ons",
-    value: money(item.addOnsTotal),
-    small: true
-  })))))), /*#__PURE__*/React.createElement("div", {
+  }, "No estimate-level add-ons.")), /*#__PURE__*/React.createElement("div", {
     className: "summary-lines saved-total-block"
   }, /*#__PURE__*/React.createElement(SummaryRow, {
     label: "Total glass after markup",
