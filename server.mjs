@@ -936,26 +936,11 @@ function calculateLineBreakdown(line, settings) {
   const glassPricePerSqFtAfterMarkup = rawGlassPricePerSqFt * markupMultiplier;
   const rawGlassTotal = totalSqFt * rawGlassPricePerSqFt;
   const glassTotalAfterMarkup = totalSqFt * glassPricePerSqFtAfterMarkup;
-  const selectedAddOns = new Set(Array.isArray(line.addOnIds) ? line.addOnIds : []);
-  const addOnTotals = settings.addOns
-    .filter((addOn) => selectedAddOns.has(addOn.id))
-    .map((addOn) => calculateAddOn(addOn, totalSqFt, line.quantity));
-  const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
   const jobCosts = {
     labor: {
       hours: numberOr(line.laborHours, 0, 0),
       rate: settings.jobCosts.laborHourlyRate,
       total: numberOr(line.laborHours, 0, 0) * settings.jobCosts.laborHourlyRate
-    },
-    logistics: {
-      hours: numberOr(line.logisticsHours, 0, 0),
-      rate: settings.jobCosts.logisticsHourlyRate,
-      total: numberOr(line.logisticsHours, 0, 0) * settings.jobCosts.logisticsHourlyRate
-    },
-    disposal: {
-      hours: numberOr(line.disposalHours, 0, 0),
-      rate: settings.jobCosts.disposalHourlyRate,
-      total: numberOr(line.disposalHours, 0, 0) * settings.jobCosts.disposalHourlyRate
     },
     scaffolding: {
       hours: numberOr(line.scaffoldingHours, 0, 0),
@@ -965,10 +950,8 @@ function calculateLineBreakdown(line, settings) {
   };
   const lineJobCostsTotal =
     jobCosts.labor.total +
-    jobCosts.logistics.total +
-    jobCosts.disposal.total +
     jobCosts.scaffolding.total;
-  const lineItemTotal = glassTotalAfterMarkup + lineJobCostsTotal + addOnsTotal;
+  const lineItemTotal = glassTotalAfterMarkup + lineJobCostsTotal;
 
   return {
     line,
@@ -982,8 +965,8 @@ function calculateLineBreakdown(line, settings) {
     rawGlassTotal,
     subtotal: rawGlassTotal,
     glassTotalAfterMarkup,
-    addOnTotals,
-    addOnsTotal,
+    addOnTotals: [],
+    addOnsTotal: 0,
     jobCosts,
     lineJobCostsTotal,
     lineItemTotal
@@ -993,6 +976,7 @@ function calculateLineBreakdown(line, settings) {
 function calculateEstimate(payload, settings) {
   const validSpecIds = new Set(settings.glassSpecs.map((spec) => spec.id));
   const validAddOnIds = new Set(settings.addOns.map((addOn) => addOn.id));
+  const rawLines = Array.isArray(payload.lines) ? payload.lines : [];
   const lines = Array.isArray(payload.lines)
     ? payload.lines.map((line) => ({
         id: line.id || crypto.randomUUID(),
@@ -1002,12 +986,7 @@ function calculateEstimate(payload, settings) {
         specIds: Array.isArray(line.specIds)
           ? line.specIds.filter((specId) => validSpecIds.has(specId))
           : [],
-        addOnIds: Array.isArray(line.addOnIds)
-          ? line.addOnIds.filter((addOnId) => validAddOnIds.has(addOnId))
-          : [],
         laborHours: numberOr(line.laborHours, 0, 0),
-        logisticsHours: numberOr(line.logisticsHours, 0, 0),
-        disposalHours: numberOr(line.disposalHours, 0, 0),
         scaffoldingHours: numberOr(line.scaffoldingHours, 0, 0)
       })).filter((line) => line.width > 0 && line.height > 0 && line.quantity > 0)
     : [];
@@ -1023,11 +1002,23 @@ function calculateEstimate(payload, settings) {
   const totalQuantity = lines.reduce((total, line) => total + line.quantity, 0);
   const glassSubtotal = lineCalculations.reduce((total, line) => total + line.subtotal, 0);
   const glassTotalWithMarkup = lineCalculations.reduce((total, line) => total + line.glassTotalAfterMarkup, 0);
-  const addOnsTotal = lineCalculations.reduce((total, line) => total + line.addOnsTotal, 0);
+  const legacySelectedAddOns = rawLines.flatMap((line) => Array.isArray(line.addOnIds) ? line.addOnIds : []);
+  const selectedAddOns = Array.isArray(payload.selectedAddOns) && payload.selectedAddOns.length
+    ? payload.selectedAddOns.filter((addOnId) => validAddOnIds.has(addOnId))
+    : legacySelectedAddOns.filter((addOnId) => validAddOnIds.has(addOnId));
+  const addOnTotals = settings.addOns
+    .filter((addOn) => selectedAddOns.includes(addOn.id))
+    .map((addOn) => calculateAddOn(addOn, totalSqFt, totalQuantity));
+  const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
   const laborTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.labor.total, 0);
-  const logisticsTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.logistics.total, 0);
-  const disposalTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.disposal.total, 0);
   const scaffoldingTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.scaffolding.total, 0);
+  const legacyLogisticsHours = rawLines.reduce((total, line) => total + numberOr(line.logisticsHours, 0, 0), 0);
+  const legacyDisposalHours = rawLines.reduce((total, line) => total + numberOr(line.disposalHours, 0, 0), 0);
+  const estimateJobCosts = payload.jobCosts || {};
+  const logisticsHours = numberOr(estimateJobCosts.logisticsHours, legacyLogisticsHours, 0);
+  const disposalHours = numberOr(estimateJobCosts.disposalHours, legacyDisposalHours, 0);
+  const logisticsTotal = logisticsHours * settings.jobCosts.logisticsHourlyRate;
+  const disposalTotal = disposalHours * settings.jobCosts.disposalHourlyRate;
   const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal + scaffoldingTotal;
   const taxEnabled = Boolean(payload.taxEnabled);
   const taxRate = numberOr(payload.taxRate, settings.defaultTaxRate || 0, 0);
@@ -1036,7 +1027,12 @@ function calculateEstimate(payload, settings) {
   return {
     lines,
     lineCalculations,
-    selectedAddOns: [],
+    selectedAddOns,
+    addOnTotals,
+    jobCosts: {
+      logisticsHours: String(logisticsHours || ""),
+      disposalHours: String(disposalHours || "")
+    },
     taxEnabled,
     taxRate,
     totals: {
