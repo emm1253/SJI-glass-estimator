@@ -52,6 +52,7 @@
   "jobCosts": {
     "laborHourlyRate": 95,
     "logisticsHourlyRate": 85,
-    "disposalHourlyRate": 65
+    "disposalHourlyRate": 65,
+    "scaffoldingHourlyRate": 0
   }
 }
