@@ -332,6 +332,10 @@ select:focus {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.input-grid.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .checkbox-section {
   margin-top: 18px;
 }
@@ -461,6 +465,93 @@ select:focus {
 
 .line-list {
   margin-top: 26px;
+}
+
+.line-card-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.line-card-stack.saved {
+  margin-top: 12px;
+}
+
+.line-breakdown-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfdfd;
+}
+
+.line-breakdown-header,
+.line-final-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.line-breakdown-header h3 {
+  margin: 3px 0 0;
+  font-size: 1.05rem;
+}
+
+.line-breakdown-header h3 span {
+  margin-left: 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.breakdown-block {
+  border: 1px solid #e0ebef;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
+.breakdown-block h4 {
+  margin: 0 0 10px;
+  color: #273942;
+  font-size: 0.84rem;
+  text-transform: uppercase;
+}
+
+.spec-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.spec-chip {
+  border: 1px solid #cfe0e5;
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: #f3f9fa;
+  color: #2c4750;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.line-final-total {
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #102a31;
+  color: #fff;
+  font-weight: 900;
+}
+
+.line-final-total strong {
+  color: #fff;
+  font-size: 1.18rem;
 }
 
 .empty-state {
@@ -689,6 +780,25 @@ tr:last-child td {
   gap: 7px;
 }
 
+.saved-breakdown {
+  border-top: 1px solid #dfebef;
+  padding-top: 12px;
+}
+
+.saved-breakdown summary {
+  cursor: pointer;
+  color: var(--teal-dark);
+  font-weight: 900;
+}
+
+.saved-total-block {
+  margin-top: 14px;
+  border: 1px solid #dbe8ec;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
 .status-message {
   margin-bottom: 14px;
   border-radius: 8px;
@@ -772,7 +882,9 @@ tr:last-child td {
 
   .input-grid,
   .input-grid.two,
+  .input-grid.four,
   .checkbox-grid,
+  .breakdown-grid,
   .settings-row,
   .settings-row.add-on,
   .settings-row.team-row,
@@ -798,7 +910,9 @@ tr:last-child td {
   }
 
   .user-strip,
-  .row-actions {
+  .row-actions,
+  .line-breakdown-header,
+  .line-final-total {
     align-items: stretch;
     flex-direction: column;
   }
