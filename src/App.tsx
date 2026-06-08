@@ -38,6 +38,7 @@ type JobCostSettings = {
   laborHourlyRate: number;
   logisticsHourlyRate: number;
   disposalHourlyRate: number;
+  scaffoldingHourlyRate: number;
 };
 
 type PricingSettings = {
@@ -54,6 +55,11 @@ type EstimateLine = {
   height: number;
   quantity: number;
   specIds: string[];
+  addOnIds?: string[];
+  laborHours?: number;
+  logisticsHours?: number;
+  disposalHours?: number;
+  scaffoldingHours?: number;
 };
 
 type DraftLine = {
@@ -61,18 +67,18 @@ type DraftLine = {
   height: string;
   quantity: string;
   specIds: string[];
+  addOnIds: string[];
+  laborHours: string;
+  logisticsHours: string;
+  disposalHours: string;
+  scaffoldingHours: string;
 };
 
 type AddOnTotal = {
   addOn: AddOn;
   total: number;
   basis: string;
-};
-
-type JobCosts = {
-  laborHours: string;
-  logisticsHours: string;
-  disposalHours: string;
+  quantity: number;
 };
 
 type SavedEstimate = {
@@ -90,10 +96,16 @@ type SavedEstimate = {
     laborTotal: number;
     logisticsTotal: number;
     disposalTotal: number;
+    scaffoldingTotal?: number;
     preTaxTotal: number;
     taxAmount: number;
     grandTotal: number;
   };
+  lines?: EstimateLine[];
+  lineCalculations?: any[];
+  selectedAddOns?: string[];
+  jobCosts?: any;
+  pricingSnapshot?: PricingSettings;
 };
 
 type AdminStatus = "idle" | "saving" | "saved" | "error";
@@ -116,7 +128,8 @@ const fallbackSettings: PricingSettings = {
   jobCosts: {
     laborHourlyRate: 95,
     logisticsHourlyRate: 85,
-    disposalHourlyRate: 65
+    disposalHourlyRate: 65,
+    scaffoldingHourlyRate: 0
   }
 };
 
@@ -226,6 +239,16 @@ function specNames(line: EstimateLine, settings: PricingSettings): string {
   return names.length ? names.join(", ") : "No specs selected";
 }
 
+function specDetails(line: EstimateLine, settings: PricingSettings) {
+  return settings.glassSpecs
+    .filter((spec) => line.specIds.includes(spec.id))
+    .map((spec) => ({
+      id: spec.id,
+      name: spec.name,
+      pricePerSqFt: spec.pricePerSqFt
+    }));
+}
+
 function squareFeet(width: number, height: number): number {
   return (width * height) / 144;
 }
@@ -239,14 +262,71 @@ function specPricePerSqFt(line: EstimateLine, settings: PricingSettings): number
 function calculateLine(line: EstimateLine, settings: PricingSettings) {
   const unitSqFt = squareFeet(line.width, line.height);
   const totalSqFt = unitSqFt * line.quantity;
-  const pricePerSqFt = specPricePerSqFt(line, settings);
-  const subtotal = totalSqFt * pricePerSqFt;
+  const selectedSpecs = specDetails(line, settings);
+  const rawGlassPricePerSqFt = specPricePerSqFt(line, settings);
+  const markupMultiplier = settings.markupMultiplier;
+  const glassPricePerSqFtAfterMarkup = rawGlassPricePerSqFt * markupMultiplier;
+  const rawGlassTotal = totalSqFt * rawGlassPricePerSqFt;
+  const glassTotalAfterMarkup = totalSqFt * glassPricePerSqFtAfterMarkup;
+  const addOnIds = Array.isArray(line.addOnIds) ? line.addOnIds : [];
+  const addOnTotals = settings.addOns
+    .filter((addOn) => addOnIds.includes(addOn.id))
+    .map((addOn) => calculateAddOn(addOn, totalSqFt, line.quantity));
+  const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
+  const jobCostRates = settings.jobCosts || fallbackSettings.jobCosts;
+  const laborRate = normalizeNumber(jobCostRates.laborHourlyRate ?? 0);
+  const logisticsRate = normalizeNumber(jobCostRates.logisticsHourlyRate ?? 0);
+  const disposalRate = normalizeNumber(jobCostRates.disposalHourlyRate ?? 0);
+  const scaffoldingRate = normalizeNumber(jobCostRates.scaffoldingHourlyRate ?? 0);
+  const laborHours = normalizeNumber(line.laborHours ?? 0);
+  const logisticsHours = normalizeNumber(line.logisticsHours ?? 0);
+  const disposalHours = normalizeNumber(line.disposalHours ?? 0);
+  const scaffoldingHours = normalizeNumber(line.scaffoldingHours ?? 0);
+  const jobCosts = {
+    labor: {
+      hours: laborHours,
+      rate: laborRate,
+      total: laborHours * laborRate
+    },
+    logistics: {
+      hours: logisticsHours,
+      rate: logisticsRate,
+      total: logisticsHours * logisticsRate
+    },
+    disposal: {
+      hours: disposalHours,
+      rate: disposalRate,
+      total: disposalHours * disposalRate
+    },
+    scaffolding: {
+      hours: scaffoldingHours,
+      rate: scaffoldingRate,
+      total: scaffoldingHours * scaffoldingRate
+    }
+  };
+  const lineJobCostsTotal =
+    jobCosts.labor.total +
+    jobCosts.logistics.total +
+    jobCosts.disposal.total +
+    jobCosts.scaffolding.total;
+  const lineItemTotal = glassTotalAfterMarkup + lineJobCostsTotal + addOnsTotal;
 
   return {
     unitSqFt,
     totalSqFt,
-    pricePerSqFt,
-    subtotal
+    selectedSpecs,
+    rawGlassPricePerSqFt,
+    pricePerSqFt: rawGlassPricePerSqFt,
+    markupMultiplier,
+    glassPricePerSqFtAfterMarkup,
+    rawGlassTotal,
+    subtotal: rawGlassTotal,
+    glassTotalAfterMarkup,
+    addOnTotals,
+    addOnsTotal,
+    jobCosts,
+    lineJobCostsTotal,
+    lineItemTotal
   };
 }
 
@@ -255,7 +335,8 @@ function calculateAddOn(addOn: AddOn, totalSqFt: number, totalQuantity: number):
     return {
       addOn,
       total: addOn.cost * totalSqFt,
-      basis: `${money(addOn.cost)} x ${measurement(totalSqFt)} sq ft`
+      basis: `${money(addOn.cost)} x ${measurement(totalSqFt)} sq ft`,
+      quantity: totalSqFt
     };
   }
 
@@ -263,14 +344,16 @@ function calculateAddOn(addOn: AddOn, totalSqFt: number, totalQuantity: number):
     return {
       addOn,
       total: addOn.cost * totalQuantity,
-      basis: `${money(addOn.cost)} x ${measurement(totalQuantity)} items`
+      basis: `${money(addOn.cost)} x ${measurement(totalQuantity)} items`,
+      quantity: totalQuantity
     };
   }
 
   return {
     addOn,
     total: addOn.cost,
-    basis: "Flat fee"
+    basis: "Flat fee",
+    quantity: 1
   };
 }
 
@@ -296,16 +379,15 @@ function App() {
     width: "",
     height: "",
     quantity: "1",
-    specIds: ["clear"]
+    specIds: ["clear"],
+    addOnIds: [],
+    laborHours: "",
+    logisticsHours: "",
+    disposalHours: "",
+    scaffoldingHours: ""
   });
   const [lineError, setLineError] = useState("");
   const [estimateLines, setEstimateLines] = useState<EstimateLine[]>([]);
-  const [selectedAddOns, setSelectedAddOns] = useState<string[]>([]);
-  const [jobCosts, setJobCosts] = useState<JobCosts>({
-    laborHours: "",
-    logisticsHours: "",
-    disposalHours: ""
-  });
   const [taxEnabled, setTaxEnabled] = useState(false);
   const [taxRate, setTaxRate] = useState("0");
   const [loginEmail, setLoginEmail] = useState("");
@@ -440,7 +522,6 @@ function App() {
     setUsers([]);
     setEstimates([]);
     setEstimateLines([]);
-    setSelectedAddOns([]);
     setActiveView("estimate");
   }
 
@@ -452,18 +533,14 @@ function App() {
     const totalSqFt = lineCalculations.reduce((total, line) => total + line.totalSqFt, 0);
     const totalQuantity = estimateLines.reduce((total, line) => total + line.quantity, 0);
     const glassSubtotal = lineCalculations.reduce((total, line) => total + line.subtotal, 0);
-    const glassTotalWithMarkup = glassSubtotal * settings.markupMultiplier;
-    const addOnTotals = settings.addOns
-      .filter((addOn) => selectedAddOns.includes(addOn.id))
-      .map((addOn) => calculateAddOn(addOn, totalSqFt, totalQuantity));
-    const addOnsTotal = addOnTotals.reduce((total, item) => total + item.total, 0);
-    const laborHours = normalizeNumber(jobCosts.laborHours);
-    const logisticsHours = normalizeNumber(jobCosts.logisticsHours);
-    const disposalHours = normalizeNumber(jobCosts.disposalHours);
-    const laborTotal = laborHours * settings.jobCosts.laborHourlyRate;
-    const logisticsTotal = logisticsHours * settings.jobCosts.logisticsHourlyRate;
-    const disposalTotal = disposalHours * settings.jobCosts.disposalHourlyRate;
-    const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal;
+    const glassTotalWithMarkup = lineCalculations.reduce((total, line) => total + line.glassTotalAfterMarkup, 0);
+    const addOnTotals = lineCalculations.flatMap((line) => line.addOnTotals);
+    const addOnsTotal = lineCalculations.reduce((total, line) => total + line.addOnsTotal, 0);
+    const laborTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.labor.total, 0);
+    const logisticsTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.logistics.total, 0);
+    const disposalTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.disposal.total, 0);
+    const scaffoldingTotal = lineCalculations.reduce((total, line) => total + line.jobCosts.scaffolding.total, 0);
+    const preTaxTotal = glassTotalWithMarkup + addOnsTotal + laborTotal + logisticsTotal + disposalTotal + scaffoldingTotal;
     const taxAmount = taxEnabled ? preTaxTotal * (normalizeNumber(taxRate) / 100) : 0;
     const grandTotal = preTaxTotal + taxAmount;
 
@@ -478,11 +555,12 @@ function App() {
       laborTotal,
       logisticsTotal,
       disposalTotal,
+      scaffoldingTotal,
       preTaxTotal,
       taxAmount,
       grandTotal
     };
-  }, [estimateLines, jobCosts, selectedAddOns, settings, taxEnabled, taxRate]);
+  }, [estimateLines, settings, taxEnabled, taxRate]);
 
   function updateDraft(field: keyof DraftLine, value: string | string[]) {
     setDraftLine((current) => ({
@@ -498,6 +576,15 @@ function App() {
         ? current.specIds.filter((id) => id !== specId)
         : [...current.specIds, specId];
       return { ...current, specIds };
+    });
+  }
+
+  function toggleDraftAddOn(addOnId: string) {
+    setDraftLine((current) => {
+      const addOnIds = current.addOnIds.includes(addOnId)
+        ? current.addOnIds.filter((id) => id !== addOnId)
+        : [...current.addOnIds, addOnId];
+      return { ...current, addOnIds };
     });
   }
 
@@ -518,7 +605,12 @@ function App() {
         width,
         height,
         quantity,
-        specIds: draftLine.specIds
+        specIds: draftLine.specIds,
+        addOnIds: draftLine.addOnIds,
+        laborHours: normalizeNumber(draftLine.laborHours),
+        logisticsHours: normalizeNumber(draftLine.logisticsHours),
+        disposalHours: normalizeNumber(draftLine.disposalHours),
+        scaffoldingHours: normalizeNumber(draftLine.scaffoldingHours)
       }
     ]);
 
@@ -526,19 +618,18 @@ function App() {
       width: "",
       height: "",
       quantity: "1",
-      specIds: ["clear"]
+      specIds: ["clear"],
+      addOnIds: [],
+      laborHours: "",
+      logisticsHours: "",
+      disposalHours: "",
+      scaffoldingHours: ""
     });
     setLineError("");
   }
 
   function removeLine(id: string) {
     setEstimateLines((current) => current.filter((line) => line.id !== id));
-  }
-
-  function toggleAddOn(addOnId: string) {
-    setSelectedAddOns((current) =>
-      current.includes(addOnId) ? current.filter((id) => id !== addOnId) : [...current, addOnId]
-    );
   }
 
   async function saveEstimate() {
@@ -557,8 +648,6 @@ function App() {
           name: estimateName || "Glass estimate",
           customerName,
           lines: estimateLines,
-          selectedAddOns,
-          jobCosts,
           taxEnabled,
           taxRate
         })
@@ -686,7 +775,7 @@ function App() {
         pricePerSqFt: normalizeNumber(spec.pricePerSqFt)
       })),
       addOns: adminSettings.addOns
-        .filter((addOn) => !["logistics", "disposal"].includes(slugify(addOn.id || addOn.name, "")))
+        .filter((addOn) => !["logistics", "disposal", "scaffolding"].includes(slugify(addOn.id || addOn.name, "")))
         .map((addOn, index) => ({
           ...addOn,
           id: slugify(addOn.id || addOn.name, `add-on-${index + 1}`),
@@ -696,7 +785,8 @@ function App() {
       jobCosts: {
         laborHourlyRate: normalizeNumber(adminSettings.jobCosts.laborHourlyRate),
         logisticsHourlyRate: normalizeNumber(adminSettings.jobCosts.logisticsHourlyRate),
-        disposalHourlyRate: normalizeNumber(adminSettings.jobCosts.disposalHourlyRate)
+        disposalHourlyRate: normalizeNumber(adminSettings.jobCosts.disposalHourlyRate),
+        scaffoldingHourlyRate: normalizeNumber(adminSettings.jobCosts.scaffoldingHourlyRate)
       }
     };
 
@@ -875,18 +965,15 @@ function App() {
           saveError={saveError}
           saveEstimate={saveEstimate}
           saveMessage={saveMessage}
-          selectedAddOns={selectedAddOns}
           setCustomerName={setCustomerName}
           setEstimateName={setEstimateName}
           settings={settings}
           taxEnabled={taxEnabled}
           taxRate={taxRate}
-          toggleAddOn={toggleAddOn}
+          toggleDraftAddOn={toggleDraftAddOn}
           toggleDraftSpec={toggleDraftSpec}
           totals={totals}
           updateDraft={updateDraft}
-          jobCosts={jobCosts}
-          setJobCosts={setJobCosts}
           setTaxEnabled={setTaxEnabled}
           setTaxRate={setTaxRate}
         />
@@ -898,6 +985,7 @@ function App() {
           estimates={estimates}
           isAdmin={isAdmin}
           refreshEstimates={refreshEstimates}
+          settings={settings}
         />
       )}
 
@@ -994,18 +1082,15 @@ function EstimatorView(props: any) {
     saveError,
     saveEstimate,
     saveMessage,
-    selectedAddOns,
     setCustomerName,
     setEstimateName,
     settings,
     taxEnabled,
     taxRate,
-    toggleAddOn,
+    toggleDraftAddOn,
     toggleDraftSpec,
     totals,
     updateDraft,
-    jobCosts,
-    setJobCosts,
     setTaxEnabled,
     setTaxRate
   } = props;
@@ -1072,6 +1157,79 @@ function EstimatorView(props: any) {
           </div>
         </div>
 
+        <div className="checkbox-section">
+          <div className="section-label">Line job costs</div>
+          <div className="input-grid four">
+            <label>
+              Labor hours
+              <input
+                min="0"
+                onChange={(event: any) => updateDraft("laborHours", event.target.value)}
+                placeholder="0"
+                step="0.25"
+                type="number"
+                value={draftLine.laborHours}
+              />
+            </label>
+            <label>
+              Logistics hours
+              <input
+                min="0"
+                onChange={(event: any) => updateDraft("logisticsHours", event.target.value)}
+                placeholder="0"
+                step="0.25"
+                type="number"
+                value={draftLine.logisticsHours}
+              />
+            </label>
+            <label>
+              Disposal hours
+              <input
+                min="0"
+                onChange={(event: any) => updateDraft("disposalHours", event.target.value)}
+                placeholder="0"
+                step="0.25"
+                type="number"
+                value={draftLine.disposalHours}
+              />
+            </label>
+            <label>
+              Scaffolding hours
+              <input
+                min="0"
+                onChange={(event: any) => updateDraft("scaffoldingHours", event.target.value)}
+                placeholder="0"
+                step="0.25"
+                type="number"
+                value={draftLine.scaffoldingHours}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="checkbox-section">
+          <div className="section-label">Line add-ons</div>
+          <div className="checkbox-grid">
+            {settings.addOns.length ? (
+              settings.addOns.map((addOn: AddOn) => (
+                <label className="check-option stacked" key={addOn.id}>
+                  <input
+                    checked={draftLine.addOnIds.includes(addOn.id)}
+                    onChange={() => toggleDraftAddOn(addOn.id)}
+                    type="checkbox"
+                  />
+                  <span>
+                    {addOn.name}
+                    <small>{costTypeLabels[addOn.costType]} - {money(addOn.cost)}</small>
+                  </span>
+                </label>
+              ))
+            ) : (
+              <div className="empty-state tight">No add-ons are configured.</div>
+            )}
+          </div>
+        </div>
+
         {lineError && <p className="field-error">{lineError}</p>}
 
         <button className="primary-button" onClick={addLine} type="button">
@@ -1121,20 +1279,6 @@ function EstimatorView(props: any) {
           </div>
         </section>
 
-        <AddOnsSection
-          selectedAddOns={selectedAddOns}
-          settings={settings}
-          toggleAddOn={toggleAddOn}
-          totals={totals}
-        />
-
-        <JobCostsSection
-          jobCosts={jobCosts}
-          setJobCosts={setJobCosts}
-          settings={settings}
-          totals={totals}
-        />
-
         <EstimateSummary
           settings={settings}
           taxEnabled={taxEnabled}
@@ -1162,156 +1306,105 @@ function EstimateLines({ estimateLines, removeLine, settings, totals }: any) {
       {!estimateLines.length ? (
         <div className="empty-state">Add the first glass line item to begin the estimate.</div>
       ) : (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Size</th>
-                <th>Qty</th>
-                <th>Sq ft</th>
-                <th>Specs</th>
-                <th>Price / sq ft</th>
-                <th>Line total</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {totals.lineCalculations.map((item: any) => (
-                <tr key={item.line.id}>
-                  <td data-label="Size">
+        <div className="line-card-stack">
+          {totals.lineCalculations.map((item: any, index: number) => (
+            <article className="line-breakdown-card" key={item.line.id}>
+              <div className="line-breakdown-header">
+                <div>
+                  <p className="eyebrow">Line {index + 1}</p>
+                  <h3>
                     {measurement(item.line.width)} x {measurement(item.line.height)} in
-                  </td>
-                  <td data-label="Qty">{measurement(item.line.quantity)}</td>
-                  <td data-label="Sq ft">
-                    <strong>{measurement(item.unitSqFt)}</strong> each
-                    <span>{measurement(item.totalSqFt)} total</span>
-                  </td>
-                  <td data-label="Specs">{specNames(item.line, settings)}</td>
-                  <td data-label="Price / sq ft">{money(item.pricePerSqFt)}</td>
-                  <td data-label="Line total">{money(item.subtotal)}</td>
-                  <td>
-                    <button
-                      className="ghost-button small"
-                      onClick={() => removeLine(item.line.id)}
-                      type="button"
-                    >
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <span>Qty {measurement(item.line.quantity)}</span>
+                  </h3>
+                </div>
+                <button
+                  className="ghost-button small"
+                  onClick={() => removeLine(item.line.id)}
+                  type="button"
+                >
+                  Remove
+                </button>
+              </div>
+
+              <div className="breakdown-grid">
+                <div className="breakdown-block">
+                  <h4>Glass</h4>
+                  <SummaryRow label="Width" value={`${measurement(item.line.width)} in`} small />
+                  <SummaryRow label="Height" value={`${measurement(item.line.height)} in`} small />
+                  <SummaryRow label="Quantity" value={measurement(item.line.quantity)} small />
+                  <SummaryRow label="Square footage each" value={`${measurement(item.unitSqFt)} sq ft`} small />
+                  <SummaryRow label="Square footage total" value={`${measurement(item.totalSqFt)} sq ft`} small />
+                  <SummaryRow label="Raw glass / sq ft" value={money(item.rawGlassPricePerSqFt)} small />
+                  <SummaryRow label="Markup multiplier" value={`${measurement(item.markupMultiplier)}x`} small />
+                  <SummaryRow
+                    label="Glass / sq ft after markup"
+                    value={money(item.glassPricePerSqFtAfterMarkup)}
+                    small
+                  />
+                  <SummaryRow label="Glass total after markup" value={money(item.glassTotalAfterMarkup)} small />
+                </div>
+
+                <div className="breakdown-block">
+                  <h4>Selected specs</h4>
+                  {item.selectedSpecs.length ? (
+                    <div className="spec-chip-list">
+                      {item.selectedSpecs.map((spec: GlassSpec) => (
+                        <span className="spec-chip" key={spec.id}>
+                          {spec.name} {money(spec.pricePerSqFt)}/sq ft
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted tight-copy">No specs selected.</p>
+                  )}
+                </div>
+
+                <div className="breakdown-block">
+                  <h4>Job costs</h4>
+                  <JobCostRow label="Labor" item={item.jobCosts.labor} />
+                  <JobCostRow label="Logistics" item={item.jobCosts.logistics} />
+                  <JobCostRow label="Disposal" item={item.jobCosts.disposal} />
+                  <JobCostRow label="Scaffolding" item={item.jobCosts.scaffolding} />
+                  <SummaryRow label="Line job costs" value={money(item.lineJobCostsTotal)} small />
+                </div>
+
+                <div className="breakdown-block">
+                  <h4>Add-ons</h4>
+                  {item.addOnTotals.length ? (
+                    item.addOnTotals.map((entry: AddOnTotal) => (
+                      <SummaryRow
+                        key={entry.addOn.id}
+                        label={`${entry.addOn.name} (${costTypeLabels[entry.addOn.costType]})`}
+                        value={money(entry.total)}
+                        small
+                      />
+                    ))
+                  ) : (
+                    <p className="muted tight-copy">No add-ons assigned to this line.</p>
+                  )}
+                  <SummaryRow label="Line add-ons" value={money(item.addOnsTotal)} small />
+                </div>
+              </div>
+
+              <div className="line-final-total">
+                <span>Final line item total</span>
+                <strong>{money(item.lineItemTotal)}</strong>
+              </div>
+            </article>
+          ))}
         </div>
       )}
     </section>
   );
 }
 
-function AddOnsSection({ selectedAddOns, settings, toggleAddOn, totals }: any) {
+function JobCostRow({ label, item }: any) {
   return (
-    <section className="panel">
-      <div className="section-heading compact">
-        <div>
-          <p className="eyebrow">Extras</p>
-          <h2>Add-ons</h2>
-        </div>
-      </div>
-      <div className="checkbox-list">
-        {settings.addOns.length ? (
-          settings.addOns.map((addOn: AddOn) => {
-            const calculated = calculateAddOn(addOn, totals.totalSqFt, totals.totalQuantity);
-            return (
-              <label className="check-option stacked" key={addOn.id}>
-                <input
-                  checked={selectedAddOns.includes(addOn.id)}
-                  onChange={() => toggleAddOn(addOn.id)}
-                  type="checkbox"
-                />
-                <span>
-                  {addOn.name}
-                  <small>{costTypeLabels[addOn.costType]} - {calculated.basis}</small>
-                </span>
-                <strong>{money(calculated.total)}</strong>
-              </label>
-            );
-          })
-        ) : (
-          <div className="empty-state tight">No add-ons are configured.</div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function JobCostsSection({ jobCosts, setJobCosts, settings, totals }: any) {
-  function patchJobCosts(patch: Partial<JobCosts>) {
-    setJobCosts((current: JobCosts) => ({ ...current, ...patch }));
-  }
-
-  return (
-    <section className="panel">
-      <div className="section-heading compact">
-        <div>
-          <p className="eyebrow">Hourly work</p>
-          <h2>Job Costs</h2>
-        </div>
-      </div>
-
-      <div className="input-grid">
-        <label>
-          Labor hours
-          <input
-            min="0"
-            onChange={(event: any) => patchJobCosts({ laborHours: event.target.value })}
-            placeholder="0"
-            step="0.25"
-            type="number"
-            value={jobCosts.laborHours}
-          />
-        </label>
-        <label>
-          Logistics hours
-          <input
-            min="0"
-            onChange={(event: any) => patchJobCosts({ logisticsHours: event.target.value })}
-            placeholder="0"
-            step="0.25"
-            type="number"
-            value={jobCosts.logisticsHours}
-          />
-        </label>
-        <label>
-          Disposal hours
-          <input
-            min="0"
-            onChange={(event: any) => patchJobCosts({ disposalHours: event.target.value })}
-            placeholder="0"
-            step="0.25"
-            type="number"
-            value={jobCosts.disposalHours}
-          />
-        </label>
-      </div>
-
-      <div className="summary-lines job-cost-preview">
-        <SummaryRow
-          label={`Labor @ ${money(settings.jobCosts.laborHourlyRate)}/hr`}
-          value={money(totals.laborTotal)}
-          small
-        />
-        <SummaryRow
-          label={`Logistics @ ${money(settings.jobCosts.logisticsHourlyRate)}/hr`}
-          value={money(totals.logisticsTotal)}
-          small
-        />
-        <SummaryRow
-          label={`Disposal @ ${money(settings.jobCosts.disposalHourlyRate)}/hr`}
-          value={money(totals.disposalTotal)}
-          small
-        />
-      </div>
-    </section>
+    <SummaryRow
+      label={`${label}: ${measurement(item.hours)} hr x ${money(item.rate)}/hr`}
+      value={money(item.total)}
+      small
+    />
   );
 }
 
@@ -1328,18 +1421,16 @@ function EstimateSummary({ settings, taxEnabled, taxRate, totals, setTaxEnabled,
       <div className="summary-lines">
         <SummaryRow label="Total square footage" value={`${measurement(totals.totalSqFt)} sq ft`} />
         <SummaryRow label="Total quantity" value={measurement(totals.totalQuantity)} />
-        <SummaryRow label="Glass subtotal" value={money(totals.glassSubtotal)} />
+        <SummaryRow label="Raw glass subtotal" value={money(totals.glassSubtotal)} />
         <SummaryRow
-          label={`Glass with markup (${measurement(settings.markupMultiplier)}x)`}
+          label={`Total glass after markup (${measurement(settings.markupMultiplier)}x)`}
           value={money(totals.glassTotalWithMarkup)}
         />
-        <SummaryRow label="Add-ons total" value={money(totals.addOnsTotal)} />
-        {totals.addOnTotals.map((item: AddOnTotal) => (
-          <SummaryRow key={item.addOn.id} label={item.addOn.name} value={money(item.total)} small />
-        ))}
         <SummaryRow label="Labor total" value={money(totals.laborTotal)} />
         <SummaryRow label="Logistics total" value={money(totals.logisticsTotal)} />
         <SummaryRow label="Disposal total" value={money(totals.disposalTotal)} />
+        <SummaryRow label="Scaffolding total" value={money(totals.scaffoldingTotal)} />
+        <SummaryRow label="Add-ons total" value={money(totals.addOnsTotal)} />
         <SummaryRow label="Estimate subtotal" value={money(totals.preTaxTotal)} strong />
       </div>
 
@@ -1382,7 +1473,147 @@ function SummaryRow({ label, value, small = false, strong = false }: any) {
   );
 }
 
-function SavedEstimatesView({ deleteEstimate, estimates, isAdmin, refreshEstimates }: any) {
+function normalizeBreakdownJobCosts(item: any) {
+  const empty = { hours: 0, rate: 0, total: 0 };
+  const jobCosts = item.jobCosts || {};
+  return {
+    labor: { ...empty, ...(jobCosts.labor || {}) },
+    logistics: { ...empty, ...(jobCosts.logistics || {}) },
+    disposal: { ...empty, ...(jobCosts.disposal || {}) },
+    scaffolding: { ...empty, ...(jobCosts.scaffolding || {}) }
+  };
+}
+
+function savedLineBreakdowns(estimate: SavedEstimate, settings: PricingSettings) {
+  const savedSettings = estimate.pricingSnapshot || settings;
+  const savedBreakdowns = Array.isArray(estimate.lineCalculations) ? estimate.lineCalculations : [];
+  const sourceLines = savedBreakdowns.length
+    ? savedBreakdowns.map((item: any) => item.line)
+    : (Array.isArray(estimate.lines) ? estimate.lines : []);
+
+  return sourceLines.map((line: EstimateLine, index: number) => {
+    const fallback = calculateLine(line, savedSettings);
+    const saved = savedBreakdowns[index] || {};
+    const jobCosts = normalizeBreakdownJobCosts({ ...fallback, ...saved });
+    const lineJobCostsTotal =
+      jobCosts.labor.total + jobCosts.logistics.total + jobCosts.disposal.total + jobCosts.scaffolding.total;
+    const addOnTotals = Array.isArray(saved.addOnTotals) ? saved.addOnTotals : fallback.addOnTotals;
+    const addOnsTotal = Number.isFinite(saved.addOnsTotal) ? saved.addOnsTotal : fallback.addOnsTotal;
+    const glassTotalAfterMarkup = Number.isFinite(saved.glassTotalAfterMarkup)
+      ? saved.glassTotalAfterMarkup
+      : fallback.glassTotalAfterMarkup;
+
+    return {
+      ...fallback,
+      ...saved,
+      line,
+      selectedSpecs: Array.isArray(saved.selectedSpecs) ? saved.selectedSpecs : fallback.selectedSpecs,
+      addOnTotals,
+      addOnsTotal,
+      jobCosts,
+      lineJobCostsTotal,
+      glassTotalAfterMarkup,
+      lineItemTotal: Number.isFinite(saved.lineItemTotal)
+        ? saved.lineItemTotal
+        : glassTotalAfterMarkup + lineJobCostsTotal + addOnsTotal
+    };
+  });
+}
+
+function SavedEstimateBreakdown({ estimate, settings }: any) {
+  const lines = savedLineBreakdowns(estimate, settings);
+
+  return (
+    <details className="saved-breakdown">
+      <summary>View Full Breakdown</summary>
+      {!lines.length ? (
+        <div className="empty-state tight">This older estimate does not include line item details.</div>
+      ) : (
+        <div className="line-card-stack saved">
+          {lines.map((item: any, index: number) => (
+            <article className="line-breakdown-card" key={item.line.id || index}>
+              <div className="line-breakdown-header">
+                <div>
+                  <p className="eyebrow">Saved line {index + 1}</p>
+                  <h3>
+                    {measurement(item.line.width)} x {measurement(item.line.height)} in
+                    <span>Qty {measurement(item.line.quantity)}</span>
+                  </h3>
+                </div>
+                <strong>{money(item.lineItemTotal)}</strong>
+              </div>
+
+              <div className="breakdown-grid">
+                <div className="breakdown-block">
+                  <h4>Glass math</h4>
+                  <SummaryRow label="Square footage each" value={`${measurement(item.unitSqFt)} sq ft`} small />
+                  <SummaryRow label="Square footage total" value={`${measurement(item.totalSqFt)} sq ft`} small />
+                  <SummaryRow label="Raw glass / sq ft" value={money(item.rawGlassPricePerSqFt)} small />
+                  <SummaryRow label="Markup multiplier" value={`${measurement(item.markupMultiplier)}x`} small />
+                  <SummaryRow label="Glass / sq ft after markup" value={money(item.glassPricePerSqFtAfterMarkup)} small />
+                  <SummaryRow label="Glass total after markup" value={money(item.glassTotalAfterMarkup)} small />
+                </div>
+
+                <div className="breakdown-block">
+                  <h4>Selected specs</h4>
+                  {item.selectedSpecs.length ? (
+                    <div className="spec-chip-list">
+                      {item.selectedSpecs.map((spec: GlassSpec) => (
+                        <span className="spec-chip" key={spec.id}>
+                          {spec.name} {money(spec.pricePerSqFt)}/sq ft
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted tight-copy">No specs selected.</p>
+                  )}
+                </div>
+
+                <div className="breakdown-block">
+                  <h4>Job costs</h4>
+                  <JobCostRow label="Labor" item={item.jobCosts.labor} />
+                  <JobCostRow label="Logistics" item={item.jobCosts.logistics} />
+                  <JobCostRow label="Disposal" item={item.jobCosts.disposal} />
+                  <JobCostRow label="Scaffolding" item={item.jobCosts.scaffolding} />
+                  <SummaryRow label="Line job costs" value={money(item.lineJobCostsTotal)} small />
+                </div>
+
+                <div className="breakdown-block">
+                  <h4>Add-ons</h4>
+                  {item.addOnTotals.length ? (
+                    item.addOnTotals.map((entry: AddOnTotal) => (
+                      <SummaryRow
+                        key={entry.addOn.id}
+                        label={`${entry.addOn.name} (${costTypeLabels[entry.addOn.costType]})`}
+                        value={money(entry.total)}
+                        small
+                      />
+                    ))
+                  ) : (
+                    <p className="muted tight-copy">No add-ons assigned to this line.</p>
+                  )}
+                  <SummaryRow label="Line add-ons" value={money(item.addOnsTotal)} small />
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      <div className="summary-lines saved-total-block">
+        <SummaryRow label="Total glass after markup" value={money(estimate.totals.glassTotalWithMarkup)} />
+        <SummaryRow label="Total labor" value={money(estimate.totals.laborTotal)} />
+        <SummaryRow label="Total logistics" value={money(estimate.totals.logisticsTotal)} />
+        <SummaryRow label="Total disposal" value={money(estimate.totals.disposalTotal)} />
+        <SummaryRow label="Total scaffolding" value={money(estimate.totals.scaffoldingTotal || 0)} />
+        <SummaryRow label="Total add-ons" value={money(estimate.totals.addOnsTotal)} />
+        <SummaryRow label="Grand total" value={money(estimate.totals.grandTotal)} strong />
+      </div>
+    </details>
+  );
+}
+
+function SavedEstimatesView({ deleteEstimate, estimates, isAdmin, refreshEstimates, settings }: any) {
   return (
     <section className="panel max-panel">
       <div className="section-heading">
@@ -1414,11 +1645,13 @@ function SavedEstimatesView({ deleteEstimate, estimates, isAdmin, refreshEstimat
                 <SummaryRow label="Labor" value={money(estimate.totals.laborTotal)} />
                 <SummaryRow label="Logistics" value={money(estimate.totals.logisticsTotal)} />
                 <SummaryRow label="Disposal" value={money(estimate.totals.disposalTotal)} />
+                <SummaryRow label="Scaffolding" value={money(estimate.totals.scaffoldingTotal || 0)} />
                 <SummaryRow label="Grand total" value={money(estimate.totals.grandTotal)} strong />
               </div>
               <p className="muted tight-copy">
                 {measurement(estimate.totals.totalSqFt)} sq ft across {measurement(estimate.totals.totalQuantity)} item(s)
               </p>
+              <SavedEstimateBreakdown estimate={estimate} settings={settings} />
               {isAdmin && (
                 <button className="ghost-button" onClick={() => deleteEstimate(estimate.id)} type="button">
                   Delete estimate
@@ -1611,7 +1844,7 @@ function AdminView(props: any) {
               onChange={(event: any) => updateJobCostRate("laborHourlyRate", event.target.value)}
               step="0.01"
               type="number"
-              value={adminSettings.jobCosts.laborHourlyRate}
+              value={adminSettings.jobCosts.laborHourlyRate ?? 0}
             />
           </label>
           <label>
@@ -1621,7 +1854,7 @@ function AdminView(props: any) {
               onChange={(event: any) => updateJobCostRate("logisticsHourlyRate", event.target.value)}
               step="0.01"
               type="number"
-              value={adminSettings.jobCosts.logisticsHourlyRate}
+              value={adminSettings.jobCosts.logisticsHourlyRate ?? 0}
             />
           </label>
           <label>
@@ -1631,7 +1864,17 @@ function AdminView(props: any) {
               onChange={(event: any) => updateJobCostRate("disposalHourlyRate", event.target.value)}
               step="0.01"
               type="number"
-              value={adminSettings.jobCosts.disposalHourlyRate}
+              value={adminSettings.jobCosts.disposalHourlyRate ?? 0}
+            />
+          </label>
+          <label>
+            Scaffolding hourly rate
+            <input
+              min="0"
+              onChange={(event: any) => updateJobCostRate("scaffoldingHourlyRate", event.target.value)}
+              step="0.01"
+              type="number"
+              value={adminSettings.jobCosts.scaffoldingHourlyRate ?? 0}
             />
           </label>
         </div>
